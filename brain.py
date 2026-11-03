@@ -7,6 +7,8 @@
 唯一真相是 events（只增不改）。facts / procedures / episodes 都是从 events 派生的
 视图，随时可重建。工作记忆不落库，每次现算。
 
+版本：0.1.0（开发期，API 还会变）。改动记录见 CHANGELOG.md。
+
 评分（学自 Ebbinghaus：R = e^(-t/S)）
 ------------------------------------
     S = (weight / 10) * 7 天      # 权重 100 → 半衰 70 天；权重 10 → 7 天
