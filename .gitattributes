@@ -1,0 +1,6 @@
+# 跨平台统一 LF：Windows 上默认会写 CRLF，推到 GitHub 后 diff 全是行尾噪声
+* text=auto eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.sql text eol=lf
