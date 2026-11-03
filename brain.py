@@ -158,7 +158,7 @@ def _current_session(con=None):
     ① meta['current_session'] —— 由装配器（self.mjs）写进来。它知道确切的容器 id；
        Python 侧拿不到（实测环境变量里没有 DSH_SESSION_ID）。
     ② 回落到「~/.dsh/sessions/<workspace>/ 下最近被写过的目录」—— 会猜错
-       （实测猜成了 session-0d65ef90，而实际是 session-f126ad6），
+       （实测猜成了 session-A，而实际是 session-B），
        所以只在 ① 没有时才用，且它只用于挂来源，不影响评分与排序。
     """
     own = con is None
