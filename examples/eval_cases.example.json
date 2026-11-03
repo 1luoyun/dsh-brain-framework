@@ -1,0 +1,18 @@
+{
+  "_说明": "示例评测集 —— 只演示格式，不是可用题集。expect 里的数字必须换成你自己库里真实存在的事件 id，否则命中率恒为 0。",
+  "_怎么用": "① 先跑几轮让库里有点东西；② 用 `python brain.py recall \"你的问题\"` 找到期望命中的事件 id；③ 把下面的 q/expect 换成你自己的；④ `python eval.py` 看 hit@1/hit@3/neg。",
+  "_三种题型": "exact＝词面能对上；fuzzy＝词面不重叠、要靠语义层（没装向量模型时这类会很差，属正常）；negative＝库里根本没有，必须返回 no_match_by_these_cues。造负例用跟你的工作完全无关的虚构场景，而且别把负例原句写进记忆——写进去它就成了真命中。",
+  "_换题集": "把本文件复制成 ../eval_cases.json 再改；或设环境变量 BRAIN_EVAL_CASES 指向任意题集。",
+  "cases": [
+    {"id": 1, "type": "exact", "q": "改配置文件把服务弄挂了", "expect": [1]},
+    {"id": 2, "type": "exact", "q": "误删了目录之后怎么恢复", "expect": [2]},
+    {"id": 3, "type": "exact", "q": "装插件踩的坑", "expect": [3]},
+    {"id": 4, "type": "exact", "q": "那个脚本为什么跑不起来", "expect": [4]},
+    {"id": 5, "type": "exact", "q": "备份放在哪", "expect": [5]},
+    {"id": 6, "type": "fuzzy", "q": "手一抖把东西弄没了怎么办", "expect": [2]},
+    {"id": 7, "type": "fuzzy", "q": "上次那个把环境搞崩的操作是什么", "expect": [1]},
+    {"id": 8, "type": "fuzzy", "q": "依赖装不上一般是哪里出岔子", "expect": [3]},
+    {"id": 9, "type": "negative", "q": "南极洲企鹅的迁徙路线", "expect": []},
+    {"id": 10, "type": "negative", "q": "十六世纪的地中海贸易税率", "expect": []}
+  ]
+}

@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""test_brain.py —— 回归测试：在隔离的空库里跑一遍核心链路，断言行为没变。
+
+为什么要有它：这 32 轮里我至少改坏过三次 ——
+  ① 情景段在并发下丢覆盖（6 个 remember 只覆盖 5 条）
+  ② hits 累加写在了排序之前，加到的不是最终前 3
+  ③ 评测把 hits 刷到几百，让记录永远逃过衰减
+三次都是「改完跑一下、看数字对不上」才发现的。eval.py 能测检索质量，
+但测不到「写入 / 衰减 / 分段 / 备份」这些底层行为。这个脚本补那一块。
+
+做法：建一个隔离沙盘（临时目录里放 brain.py + episode.py + schema.sql），
+在空库上跑一遍完整链路，逐项断言。**绝不碰真库。**
+
+用法：python test_brain.py        全部通过返回 0
+"""
+
+import json
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
+
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+# 沙盘放在脚本同级（`.test-sand`，已进 .gitignore）—— **不依赖上级目录结构**。
+# 原先用 `dirname(dirname(HERE))/记录/tmp`，2026-11-03 裸机测试当场暴露：
+# 把代码拷到别的目录后沙盘落成了 `记录\记录\tmp\_brain_test`（双「记录」）。
+# 换机器/换目录是常态，测试环境不该假设自己住在 memory/brain。
+SAND = os.environ.get("BRAIN_TEST_SAND") or os.path.join(HERE, ".test-sand")
+PY = sys.executable
+
+PASS, FAIL = [], []
+
+
+def ok(name, cond, detail=""):
+    (PASS if cond else FAIL).append(name)
+    print("  [%s] %-30s %s" % ("OK" if cond else "XX", name, detail))
+
+
+def run(args, timeout=180):
+    r = subprocess.run([PY, os.path.join(SAND, "brain.py")] + args,
+                       capture_output=True, timeout=timeout, cwd=SAND)
+    return r.returncode, r.stdout.decode("utf-8", "replace"), r.stderr.decode("utf-8", "replace")
+
+
+def js(args):
+    rc, out, err = run(args)
+    if rc != 0:
+        return None
+    try:
+        return json.loads(out)
+    except Exception:
+        return None
+
+
+def setup():
+    if os.path.isdir(SAND):
+        shutil.rmtree(SAND)
+    os.makedirs(SAND)
+    for f in ("brain.py", "episode.py", "schema.sql"):
+        shutil.copy2(os.path.join(HERE, f), os.path.join(SAND, f))
+    con = sqlite3.connect(os.path.join(SAND, "brain.db"))
+    with open(os.path.join(SAND, "schema.sql"), encoding="utf-8") as fh:
+        con.executescript(fh.read())
+    con.commit()
+    con.close()
+
+
+def main():
+    setup()
+    print("沙盘: %s" % SAND)
+
+    print("\n--- 写入 ---")
+    a = js(["remember", "--kind", "accident", "--title", "测试事故：把配置改坏了",
+            "--weight", "95", "--emotion", "sting", "--source", "test"])
+    ok("remember 返回 id", a and a.get("id"), "id=%s" % (a or {}).get("id"))
+    b = js(["remember", "--kind", "done", "--title", "测试完成：某个日常任务",
+            "--source", "test"])
+    ok("第二条写入", b and b.get("id"))
+
+    print("\n--- 检索 ---")
+    r = js(["recall", "把配置改坏了", "--limit", "5", "--no-vector"])
+    ok("recall 能命中", r and r["verdict"] == "found" and r["count"] >= 1,
+       "verdict=%s count=%s" % ((r or {}).get("verdict"), (r or {}).get("count")))
+    ok("命中第一条就是它", r and r["hits"] and r["hits"][0]["title"].startswith("测试事故"),
+       (r["hits"][0]["title"][:24] if r and r["hits"] else "-"))
+
+    r2 = js(["recall", "紫色独角兽月球饺子馆", "--limit", "5", "--no-vector"])
+    ok("否定题返回 no_match", r2 and r2["verdict"] == "no_match_by_these_cues",
+       "verdict=%s" % (r2 or {}).get("verdict"))
+
+    print("\n--- 情景分段 ---")
+    con = sqlite3.connect(os.path.join(SAND, "brain.db"))
+    n_ep = con.execute("SELECT count(*) FROM episodes").fetchone()[0]
+    covered = set()
+    for (ids,) in con.execute("SELECT event_ids FROM episodes"):
+        covered |= set(json.loads(ids or "[]"))
+    ev = {r[0] for r in con.execute("SELECT id FROM events WHERE superseded=0")}
+    con.close()
+    ok("episodes 非空", n_ep > 0, "%d 段" % n_ep)
+    ok("覆盖全部事件", ev <= covered, "%d/%d" % (len(ev & covered), len(ev)))
+
+    print("\n--- 衰减 ---")
+    # 把两条事件的时间改成 60 天前，再跑 forget
+    con = sqlite3.connect(os.path.join(SAND, "brain.db"))
+    con.execute("UPDATE events SET ts=datetime('now','localtime','-60 days')")
+    con.commit()
+    con.close()
+    f = js(["forget"])
+    ok("forget 有候选", f and f["candidates"] >= 1, "candidates=%s" % (f or {}).get("candidates"))
+    con = sqlite3.connect(os.path.join(SAND, "brain.db"))
+    w = con.execute("SELECT weight FROM events WHERE kind='done'").fetchone()
+    bad = con.execute("SELECT count(*) FROM decay_log WHERE new_w <> max(1, old_w - 10)").fetchone()[0]
+    con.close()
+    ok("完成类被降权", w and w[0] < 50, "w=%s" % (w[0] if w else "-"))
+    ok("decay_log 一致", bad == 0, "不合规 %d" % bad)
+
+    print("\n--- 保护规则 ---")
+    con = sqlite3.connect(os.path.join(SAND, "brain.db"))
+    w_acc = con.execute("SELECT weight FROM events WHERE kind='accident'").fetchone()[0]
+    con.close()
+    ok("事故永不衰减", w_acc == 95, "w=%d" % w_acc)
+
+    print("\n--- 备份 ---")
+    # 必须指定 --to 到沙盘内：不指定的话它会按默认路径落到
+    # 记录\archive\brain-backup\ —— 那是**真库**的备份目录，测试不许往里塞东西。
+    bk_dir = os.path.join(SAND, "_bk")
+    bk = js(["backup", "--to", bk_dir])
+    p = (bk or {}).get("path")
+    ok("backup 生成文件", p and os.path.exists(p), os.path.basename(p) if p else "-")
+    ok("备份落在沙盘内", p and os.path.abspath(p).startswith(os.path.abspath(SAND)),
+       os.path.dirname(p) if p else "-")
+    if p:
+        c = sqlite3.connect(p)
+        ok("快照可打开", c.execute("PRAGMA integrity_check").fetchone()[0] == "ok")
+        c.close()
+
+    print()
+    print("通过 %d / 失败 %d" % (len(PASS), len(FAIL)))
+    if FAIL:
+        print("失败项: %s" % FAIL)
+    # 跑完清掉沙盘（它只有几十 KB，但留在源码目录里会让人误以为是数据）
+    try:
+        shutil.rmtree(SAND)
+    except Exception:
+        print("（沙盘没删掉，可手动删: %s）" % SAND)
+    return 0 if not FAIL else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

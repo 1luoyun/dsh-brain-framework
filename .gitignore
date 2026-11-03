@@ -1,0 +1,21 @@
+# 数据（不入库：二进制、每次变、含个人记忆）
+brain.db
+brain.db-wal
+brain.db-shm
+
+# Python
+__pycache__/
+*.pyc
+
+# 测试沙盘
+.test-sand/
+
+# 本机个人题集（用 examples 里的示例，或设 BRAIN_EVAL_CASES）
+eval_cases.json
+eval_*.txt
+
+# 中间产物
+_*.json
+_*.txt
+*.bak
+*.log
