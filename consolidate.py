@@ -29,9 +29,8 @@ import sys
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# 数据库位置：BRAIN_DB 环境变量优先，否则用本目录下的 brain.db。
-# （早期版本写死了某个绝对路径，换机器或换库位置就静默连到旧库——比报错更坏：
-#   它会"跑成功"，但改的不是你以为的库。）
+# 2026-11-03 开源准备：原来写死 `E:\deepseek\memory\brain\brain.db`，
+# 换机器或换库位置就静默连到旧库（比报错更坏：它会"跑成功"但改的不是你以为的库）。
 DB = os.environ.get("BRAIN_DB") or os.path.join(HERE, "brain.db")
 
 
@@ -445,7 +444,7 @@ def user_topic_facts(con, min_support=10, top=8):
     """
     import collections as _c
     # 这些出现在指纹里也不说明「他关心」：虚词、会话/子代理 ID 片段。
-    # 2026-11-03 实测：不筛的话会提炼出「反复提到「session-xxxx」」
+    # 2026-11-03 实测：不筛的话会提炼出「落云反复提到「session-5e8a6994…」」
     # 「落云反复提到「不是」」这种垃圾。
     extra_stop = {"不是", "没有", "这个", "那个", "可以", "什么", "现在", "就是",
                   "还是", "但是", "因为", "所以", "其实", "然后", "觉得", "一个",

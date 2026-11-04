@@ -63,6 +63,7 @@ python brain.py brief --about "要改线上配置了"
 | `forget` | 衰减与休眠（默认 dry-run） |
 | `distill` | 提炼正文（默认 dry-run） |
 | `rehearse` | 预演：这件事做过几次、出过几次事 |
+| `review` | 定期回看：最近 N 天哪些事改变了我（事故/纠正/重决定 + 我的模式同屏） |
 | `source` | 按时间回原始对话取证 |
 | `backup` | 快照 |
 

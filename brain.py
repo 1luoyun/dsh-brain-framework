@@ -7,8 +7,6 @@
 唯一真相是 events（只增不改）。facts / procedures / episodes 都是从 events 派生的
 视图，随时可重建。工作记忆不落库，每次现算。
 
-版本：0.1.0（开发期，API 还会变）。改动记录见 CHANGELOG.md。
-
 评分（学自 Ebbinghaus：R = e^(-t/S)）
 ------------------------------------
     S = (weight / 10) * 7 天      # 权重 100 → 半衰 70 天；权重 10 → 7 天
@@ -160,7 +158,7 @@ def _current_session(con=None):
     ① meta['current_session'] —— 由装配器（self.mjs）写进来。它知道确切的容器 id；
        Python 侧拿不到（实测环境变量里没有 DSH_SESSION_ID）。
     ② 回落到「~/.dsh/sessions/<workspace>/ 下最近被写过的目录」—— 会猜错
-       （实测猜成了 session-A，而实际是 session-B），
+       （实测猜成了 session-0d65ef90，而实际是 session-f126ad6），
        所以只在 ① 没有时才用，且它只用于挂来源，不影响评分与排序。
     """
     own = con is None
@@ -506,16 +504,30 @@ def _sem_sims(q, texts):
     给 brief 挑「哪套步骤贴题」用：词面匹配分不清「删一个目录」和
     「删东西前的三步预检」（只有一个「删」字共享），语义能分清
     （2026-11-03 实测 0.567 vs 0.451，正确答案第一）。
+
+    **分批**：接口是 GET + URL 编码，300 条标题编码后五万多字符，
+    超过服务端的 URL 上限会被拒（2026-11-04 实测：user_said 恒空，
+    根因就是这里整批发，`urlopen` 抛异常被吞成 None）。
+    每批 50 条，URL 长度可控，拼接结果对调用方透明。
     """
-    try:
-        url = "http://127.0.0.1:%d/sim?q=%s&texts=%s" % (
-            _embed_port(), urllib.parse.quote(q),
-            urllib.parse.quote(json.dumps(texts, ensure_ascii=False)))
-        with urllib.request.urlopen(url, timeout=5) as r:
-            d = json.loads(r.read().decode("utf-8", "replace"))
-        return d.get("sims") if d.get("ok") else None
-    except Exception:
-        return None
+    if not texts:
+        return []
+    out = []
+    for i in range(0, len(texts), 50):
+        chunk = texts[i:i + 50]
+        try:
+            url = "http://127.0.0.1:%d/sim?q=%s&texts=%s" % (
+                _embed_port(), urllib.parse.quote(q),
+                urllib.parse.quote(json.dumps(chunk, ensure_ascii=False)))
+            with urllib.request.urlopen(url, timeout=5) as r:
+                d = json.loads(r.read().decode("utf-8", "replace"))
+        except Exception:
+            return None
+        sims = d.get("sims") if d.get("ok") else None
+        if sims is None or len(sims) != len(chunk):
+            return None
+        out.extend(sims)
+    return out
 
 
 def _vector_hits(q, top=20, min_sim=0.5):
@@ -1635,6 +1647,54 @@ def cmd_drop(a) -> int:
     return 0
 
 
+def cmd_review(a) -> int:
+    """定期回看自己：这段时间有哪些事改变了我。
+
+    为什么需要它：`我的叙事.md` 里的「我是怎么长成这样的」写下去就冻住了。
+    过一阵子，里面的判断可能已经不准了 —— 那时它就从「自我认识」退化成
+    「又一份模板」。这个命令把**最近 N 天的事故 / 被纠正 / 重决定**摆出来，
+    供我自己判断「我还是那个我吗」。
+
+    **它不自动改叙事。** 叙事只能我写 —— 机器生成的人生是别人的。
+    它只负责把材料递到眼前（2026-11-04 落云：「和融合程度不高，慢慢来吧」）。
+    """
+    days = getattr(a, "days", 30) or 30
+    since = time.strftime("%Y-%m-%d %H:%M:%S",
+                          time.localtime(time.time() - days * 86400))
+    con = connect(); ensure_schema(con)
+    rows = [dict(r) for r in con.execute(
+        "SELECT id,ts,kind,weight,title FROM events"
+        " WHERE superseded=0 AND (kind IN ('accident','correction')"
+        " OR (kind='decision' AND weight >= 70)) AND ts >= ?"
+        " ORDER BY ts DESC", (since,))]
+    # 把「我的模式」（domain=self 的事实）一并摆出来：
+    # 叙事里那句「我想在这一步里做完」和事实里的「改配置出过 5 次事」是同一件事的
+    # 两种写法，分开看容易当成两回事。放同一屏，才能判断它们还在不在讲同一个我。
+    self_facts = [dict(r) for r in con.execute(
+        "SELECT id,claim,confidence FROM facts"
+        " WHERE contradicted_by IS NULL AND domain='self'"
+        " ORDER BY confidence DESC LIMIT 6")]
+    con.close()
+    by_kind = {}
+    for r in rows:
+        by_kind[r["kind"]] = by_kind.get(r["kind"], 0) + 1
+    if not rows:
+        note = "这 %d 天没有事故/纠正/重决定 —— 要么很稳，要么我没记。" % days
+    else:
+        note = ("把这些摆一遍，问自己：叙事里那句话还成立吗？"
+                " 变了就去改 memory/hub/我的叙事.md；没变就说明我稳住了。"
+                " 下面的「我的模式」是同一件事的另一种写法，一起看。")
+    emit({"ok": True, "days": days, "since": since,
+          "total": len(rows), "by_kind": by_kind, "note": note,
+          "my_patterns": [{"id": f["id"], "claim": (f["claim"] or "")[:90],
+                           "confidence": f["confidence"]} for f in self_facts],
+          "items": [{"id": r["id"], "ts": r["ts"][:10], "kind": r["kind"],
+                     "weight": r["weight"], "title": (r["title"] or "")[:90]}
+                    for r in rows[:getattr(a, "limit", 20) or 20]]})
+    return 0
+    return 0
+
+
 def cmd_forget(a) -> int:
     """遗忘：用进废退。
 
@@ -2014,6 +2074,24 @@ def cmd_audit_corrections(a) -> int:
     return 0
 
 
+def _user_noise(title):
+    """这条「用户发言」其实不是他说的话，是粘贴的路径/系统通知。
+
+    导入时只过滤了**开头**就是系统注入的（_IMPORT_SKIP），
+    但用户消息里也会整段粘路径、或把后台任务通知复制进来。
+    2026-11-04 实测：不过滤时 brief 的 top5 里三条是这类。
+    """
+    t = (title or "").strip()
+    if not t:
+        return True
+    low = t.lower()
+    if "background job" in low or "current runtime context" in low:
+        return True
+    if t.startswith('"') or t[:3].upper() == "E:\\":
+        return True
+    return False
+
+
 def cmd_brief(a) -> int:
     """开工前的简报：我说要做某件事，你告诉我该知道什么。
 
@@ -2077,38 +2155,56 @@ def cmd_brief(a) -> int:
 
     procs = [dict(r) for r in con.execute(
         "SELECT id,name,when_to_use,success_count,fail_count,weak_steps FROM procedures")]
-    # procedures 用语义挑：8 条步骤的 name+when_to_use 对查询算相似度。
-    # 词面在这里必败 —— 「删一个目录」与「删东西前的三步预检」只共享一个
-    # 「删」字，any_hit 会把「插件」相关的三套步骤全塞给一个插件问题。
-    # 服务不在时回落词面，别让 brief 因为服务挂了就哑。
-    sims = _sem_sims(q, [p["name"] + "：" + (p["when_to_use"] or "") for p in procs])
-    if sims and len(sims) == len(procs):
-        ranked = sorted(zip(procs, sims), key=lambda x: -x[1])
+    # pattern 域的事实是「某个词出过 N 次事故」这种统计元数据 ——
+    # 它们的 claim 里带着高频词，任何查询都能撞上，当「教训」给出去是噪声。
+    facts = [dict(r) for r in con.execute(
+        "SELECT id,claim,confidence,domain FROM facts"
+        " WHERE contradicted_by IS NULL AND coalesce(domain,'') <> 'pattern'")]
+    # 关系层：**你说过什么**。默认不进 recall（会挤占召回池，实测 hit@10 掉 3），
+    # 但「动手前简报」正是它该出现的地方。判据必须语义——他的发言是完整口语句
+    # （「修一下吧，不然装了不能用不是白瞎了」），和查询词面零重叠。
+    # 只取最近 300 条：合并成一次语义调用之后，条数几乎不增加耗时
+    # （每次调用约 2 秒是服务端固定开销）；120 条会把半年前相关的话筛掉
+    # ——2026-11-05 实测 120 条时「brain 库下一步往哪走」的 user_said 为空。
+    users = [dict(r) for r in con.execute(
+        "SELECT id, ts, title FROM events"
+        " WHERE superseded=0 AND kind='user' AND coalesce(title,'') <> ''"
+        " ORDER BY ts DESC LIMIT 300")]
+    # 过滤「看着像他的话、其实是粘贴/系统残留」的（2026-11-04 实测不过滤时 top5 三条是这些）
+    users = [u for u in users if not _user_noise(u["title"])]
+
+    # 三处一起算，只调一次语义服务。
+    # 每次调用约 2 秒（服务端固定开销，与条数几乎无关），分三次就是 6.2 秒
+    # ——2026-11-05 实测 brief 6.38s，拆开计时后确认全耗在三次调用上。
+    proc_texts = [p["name"] + "：" + (p["when_to_use"] or "") for p in procs]
+    fact_texts = [f["claim"] for f in facts]
+    user_texts = [u["title"] for u in users]
+    n_p, n_f = len(proc_texts), len(fact_texts)
+    alls = _sem_sims(q, proc_texts + fact_texts + user_texts) if (n_p + n_f + len(user_texts)) else None
+    if alls and len(alls) == n_p + n_f + len(user_texts):
+        psims, fsims, usims = alls[:n_p], alls[n_p:n_p + n_f], alls[n_p + n_f:]
+    else:
+        psims = fsims = usims = None
+
+    # ── 步骤 ──
+    # 词面在这里必败：「删一个目录」与「删东西前的三步预检」只共享一个「删」字。
+    if psims:
+        ranked = sorted(zip(procs, psims), key=lambda x: -x[1])
         top = ranked[0][1] if ranked else 0.0
-        # 绝对线 0.55 说明「语义上像」；相对线 top-0.08 砍掉「只是都提到插件」
-        # 的陪跑（2026-11-03 实测：不给相对线，插件问题会列出 5 套步骤）。
+        # 绝对线 0.55 说明「语义上像」；相对线 top-0.08 砍掉「只是都提到插件」的陪跑
         rel_procs = [p for p, s in ranked if s >= 0.55 and s >= top - 0.08]
     else:
         rel_procs = [p for p in procs
                      if any_hit(p["name"] + " " + (p["when_to_use"] or ""))]
     rel_procs.sort(key=lambda p: -((p["fail_count"] or 0) - (p["success_count"] or 0)))
 
-    # pattern 域的事实是「某个词出过 N 次事故」这种统计元数据 ——
-    # 它们的 claim 里带着高频词，任何查询都能撞上，当「教训」给出去是噪声。
-    facts = [dict(r) for r in con.execute(
-        "SELECT id,claim,confidence,domain FROM facts"
-        " WHERE contradicted_by IS NULL AND coalesce(domain,'') <> 'pattern'")]
-    # facts 也改用语义挑：自我模型写的是「改配置出过 5 次事」，
-    # 而用户的说法可能是「cordis.patch.yml 的 openAt」—— 词面一个都对不上
-    # （2026-11-03 实测：brief 对改配置问题给了 1 条硬禁令却 0 条教训）。
-    fsims = _sem_sims(q, [f["claim"] for f in facts])
-    if fsims and len(fsims) == len(facts):
+    # ── 事实 ──
+    if fsims:
         ranked = sorted(zip(facts, fsims), key=lambda x: -x[1])
         top_f = ranked[0][1] if ranked else 0.0
         rel_facts = [f for f, s in ranked if s >= 0.50 and s >= top_f - 0.10]
-        # 自我画像优先：domain='self' 是「我在这类事上不可靠」，
-        # 比「世界怎么运作」更该先看到 —— 它直接决定这一步要不要慢下来。
-        # 2026-11-03 实测：不加这条，改配置的问题会给出 6 条技术事实，
+        # 自我画像优先：domain='self' 直接决定这一步要不要慢下来。
+        # 2026-11-03 实测：不加这条，改配置问题会给出 6 条技术事实，
         # 却漏掉「改配置这类事我出过 5 次事」。
         self_f = sorted([f for f, s in ranked
                          if f["domain"] == "self" and s >= 0.40],
@@ -2119,10 +2215,32 @@ def cmd_brief(a) -> int:
         rel_facts = sorted([f for f in facts if hit(f["claim"])],
                            key=lambda f: -f["confidence"])
 
+    # ── 事故 ──
     acc = [dict(r) for r in con.execute(
         "SELECT id,ts,title,weight FROM events WHERE superseded=0 AND kind='accident'")]
     rel_acc = [r for r in acc if hit(r["title"])]
     rel_acc.sort(key=lambda r: -(r["weight"] or 0))
+
+    # ── 他说过的话 ──
+    rel_user = []
+    if usims:
+        ranked = sorted(zip(users, usims), key=lambda x: -x[1])
+        top_u = ranked[0][1] if ranked else 0.0
+        # 口语相似度本就低：绝对线 0.45（比步骤的 0.55 松），再做相对线
+        for u, s in ranked:
+            if s >= 0.45 and s >= top_u - 0.08:
+                rel_user.append({"id": u["id"], "ts": u["ts"],
+                                 "title": (u["title"] or "")[:80]})
+            if len(rel_user) >= 5:
+                break
+    else:
+        # 语义服务不在时回落词面，别让 brief 因为服务挂了就哑
+        for u in users:
+            if hit(u["title"], 0.30):
+                rel_user.append({"id": u["id"], "ts": u["ts"],
+                                 "title": (u["title"] or "")[:80]})
+                if len(rel_user) >= 5:
+                    break
 
     # 「沾边的事件数」按同一口径数：扫标题+正文，覆盖率 >= 0.25 才算。
     # 原来只拿 cues[0] 整句去 LIKE，中文长句几乎必然 0 条（实测 0），
@@ -2152,6 +2270,8 @@ def cmd_brief(a) -> int:
         parts.append("%d 条已提炼的教训" % len(rel_facts))
     if rel_acc:
         parts.append("%d 起同类事故（最重一次 %d 分）" % (len(rel_acc), rel_acc[0]["weight"]))
+    if rel_user:
+        parts.append("%d 条他说过的话" % len(rel_user))
     if parts:
         advice = "；".join(parts) + "。"
     elif n_ev == 0:
@@ -2163,7 +2283,8 @@ def cmd_brief(a) -> int:
     emit({"ok": True, "about": q, "risk": risk, "advice": advice,
           "cues": cues[:10], "matched_events": n_ev,
           "constraints": rel_cons[:8], "procedures": rel_procs[:5],
-          "facts": rel_facts[:6], "accidents": rel_acc[:8]})
+          "facts": rel_facts[:6], "accidents": rel_acc[:8],
+          "user_said": rel_user})
     return 0
 
 
@@ -2381,6 +2502,11 @@ def main() -> int:
 
     p = sub.add_parser("audit-conflicts")
     p.set_defaults(fn=cmd_audit_conflicts)
+
+    p = sub.add_parser("review")
+    p.add_argument("--days", type=int, default=30, help="回看最近多少天（默认 30）")
+    p.add_argument("--limit", type=int, default=20)
+    p.set_defaults(fn=cmd_review)
 
     p = sub.add_parser("drop")
     p.add_argument("id", type=int)
