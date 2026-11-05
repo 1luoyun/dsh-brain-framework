@@ -3023,10 +3023,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(prog="brain", description="类脑记忆库")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("init")
+    p = sub.add_parser("init", help="建库（首次运行）")
     p.set_defaults(fn=lambda a: (ensure_schema(connect()), emit({"ok": True, "db": DB}), 0)[-1])
 
-    p = sub.add_parser("remember")
+    p = sub.add_parser("remember", help="记一件事（唯一写入点）")
     p.add_argument("--kind", required=True)
     p.add_argument("--title", required=True)
     p.add_argument("--body"); p.add_argument("--weight", type=int)
@@ -3038,7 +3038,7 @@ def main() -> int:
     p.add_argument("--session", help="来源会话 id；不传就按 sessions 目录最近改动来猜")
     p.set_defaults(fn=cmd_remember)
 
-    p = sub.add_parser("recall"); p.add_argument("query")
+    p = sub.add_parser("recall", help="按线索查记忆（事件/事实/步骤/禁令/未结项）"); p.add_argument("query")
     p.add_argument("--limit", type=int, default=10)
     p.add_argument("--include-dormant", action="store_true",
                    help="连休眠记录一起查。休眠 = 长期不用已退到后台，不是删除；"
@@ -3071,68 +3071,68 @@ def main() -> int:
     p.set_defaults(fn=cmd_recall)
 
     # 容量 4±1（Cowan 2001）：塞多了不聚焦，反而不如少而准
-    p = sub.add_parser("working"); p.add_argument("--limit", type=int, default=4)
+    p = sub.add_parser("working", help="当下该注意什么（4 条注意力 + 心情 + 当前情景段）"); p.add_argument("--limit", type=int, default=4)
     p.set_defaults(fn=cmd_working)
 
-    p = sub.add_parser("link")
+    p = sub.add_parser("link", help="手动连两条事件（assoc 之外的关系）")
     p.add_argument("a", type=int); p.add_argument("b", type=int)
     p.add_argument("--rel", required=True); p.add_argument("--note")
     p.set_defaults(fn=cmd_link)
 
-    p = sub.add_parser("feedback"); p.add_argument("id", type=int)
+    p = sub.add_parser("feedback", help="给一条记录评价（好用/不好用/被纠正）"); p.add_argument("id", type=int)
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--good", action="store_true"); g.add_argument("--bad", action="store_true")
     g.add_argument("--correct", action="store_true")
     p.set_defaults(fn=cmd_feedback)
 
-    p = sub.add_parser("constrain")
+    p = sub.add_parser("constrain", help="立一条禁令")
     p.add_argument("--what", required=True)
     p.add_argument("--why"); p.add_argument("--scope")
     p.add_argument("--severity", default="soft")
     p.set_defaults(fn=cmd_constrain)
 
-    p = sub.add_parser("violate"); p.add_argument("id", type=int)
+    p = sub.add_parser("violate", help="记一次违反禁令（计数 +1 并写事故）"); p.add_argument("id", type=int)
     p.add_argument("--note"); p.set_defaults(fn=cmd_violate)
 
     # 2026-11-06 补：停用/恢复一条约束。原来 `constraints.active` 有 7 处读、零处写 ——
     # 「禁用一条约束」这个功能根本不存在（查空字段时发现的）。
-    p = sub.add_parser("unconstrain"); p.add_argument("id", type=int)
+    p = sub.add_parser("unconstrain", help="停用或恢复一条禁令"); p.add_argument("id", type=int)
     p.add_argument("--disable", action="store_true",
                    help="停用这条约束（默认是恢复）。禁用的行仍在表里，可再启用")
     p.set_defaults(fn=cmd_unconstrain)
 
-    p = sub.add_parser("constraints"); p.add_argument("--severity")
+    p = sub.add_parser("constraints", help="列禁令（默认只看生效的）"); p.add_argument("--severity")
     p.add_argument("--all", dest="show_all", action="store_true",
                    help="连已停用的也列出来（默认只看 active=1）")
     p.set_defaults(fn=cmd_constraints)
 
-    p = sub.add_parser("open"); p.add_argument("--what", required=True)
+    p = sub.add_parser("open", help="记一条未结项（我打算做但还没做）"); p.add_argument("--what", required=True)
     p.add_argument("--due"); p.add_argument("--note"); p.set_defaults(fn=cmd_open)
 
-    p = sub.add_parser("close"); p.add_argument("id", type=int); p.set_defaults(fn=cmd_close)
+    p = sub.add_parser("close", help="关掉一条未结项"); p.add_argument("id", type=int); p.set_defaults(fn=cmd_close)
 
-    p = sub.add_parser("similar"); p.add_argument("id", type=int)
+    p = sub.add_parser("similar", help="找和某条事件相似的其它事件"); p.add_argument("id", type=int)
     p.add_argument("--limit", type=int, default=10); p.set_defaults(fn=cmd_similar)
 
-    p = sub.add_parser("reindex"); p.set_defaults(fn=cmd_reindex)
+    p = sub.add_parser("reindex", help="重建全文索引"); p.set_defaults(fn=cmd_reindex)
 
-    p = sub.add_parser("meta-set")
+    p = sub.add_parser("meta-set", help="写一条元数据")
     p.add_argument("key"); p.add_argument("value")
     p.set_defaults(fn=cmd_meta_set)
 
-    p = sub.add_parser("backup")
+    p = sub.add_parser("backup", help="备份库")
     p.add_argument("--to", help="快照目录（默认 archive\\brain-backup）")
     p.add_argument("--keep", type=int, default=5, help="保留最近几份（默认 5）")
     p.set_defaults(fn=cmd_backup)
 
-    p = sub.add_parser("stats"); p.set_defaults(fn=cmd_stats)
+    p = sub.add_parser("stats", help="库的规模与分布"); p.set_defaults(fn=cmd_stats)
 
-    p = sub.add_parser("proc")
+    p = sub.add_parser("proc", help="记一套步骤（怎么做一件事）")
     p.add_argument("query", nargs="?", default="", help="关键词；留空列全部")
     p.add_argument("--id", type=int, help="看某一条的完整步骤")
     p.set_defaults(fn=cmd_proc)
 
-    p = sub.add_parser("proc-use")
+    p = sub.add_parser("proc-use", help="记一次步骤的成败（给重写判断用）")
     p.add_argument("id", type=int)
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--ok", action="store_true")
@@ -3140,36 +3140,36 @@ def main() -> int:
     p.add_argument("--step", type=int, help="失败卡在第几步（对应 steps 里的序号）")
     p.set_defaults(fn=cmd_proc_use)
 
-    p = sub.add_parser("source")
+    p = sub.add_parser("source", help="按事件 id 取回原始对话（±5 分钟）")
     p.add_argument("id", type=int, help="事件 id")
     p.add_argument("--window", type=int, default=5, help="前后多少分钟（默认 5）")
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--max-chars", type=int, default=400, help="每条原文最多截多少字")
     p.set_defaults(fn=cmd_source)
 
-    p = sub.add_parser("audit-corrections")
+    p = sub.add_parser("audit-corrections", help="审计被纠正的记录")
     p.add_argument("--days", type=int, default=7)
     p.add_argument("--limit", type=int, default=20)
     p.set_defaults(fn=cmd_audit_corrections)
 
-    p = sub.add_parser("brief")
+    p = sub.add_parser("brief", help="开工前简报：禁令/步骤/教训/事故/风险")
     p.add_argument("--about", required=True, help="打算做的事，一句话")
     p.set_defaults(fn=cmd_brief)
 
-    p = sub.add_parser("purge-derived")
+    p = sub.add_parser("purge-derived", help="清掉派生的孤儿数据")
     p.add_argument("--apply", action="store_true", help="真删（默认只看）")
     p.set_defaults(fn=cmd_purge_derived)
 
-    p = sub.add_parser("rehearse")
+    p = sub.add_parser("rehearse", help="动手前预演：这类操作过去出过多少事")
     p.add_argument("--about", required=True, help="打算做的动作，一句话")
     p.set_defaults(fn=cmd_rehearse)
 
-    p = sub.add_parser("conflict")
+    p = sub.add_parser("conflict", help="列可能被推翻的候选对（人来定）")
     p.add_argument("--min-gap", type=int, default=7, help="两条至少隔几天才算新旧版本")
     p.add_argument("--limit", type=int, default=10)
     p.set_defaults(fn=cmd_conflict)
 
-    p = sub.add_parser("distill")
+    p = sub.add_parser("distill", help="把一批事件提炼成事实")
     p.add_argument("--apply", action="store_true")
     p.add_argument("--min-age", type=int, default=90, help="多少天以上的才提炼")
     p.add_argument("--min-len", type=int, default=500, help="正文超过多少字才值得提炼")
@@ -3179,13 +3179,13 @@ def main() -> int:
     p.add_argument("--limit", type=int, default=50, help="一次最多提炼几条")
     p.set_defaults(fn=cmd_distill)
 
-    p = sub.add_parser("import-user")
+    p = sub.add_parser("import-user", help="从会话索引导入落云说过的话")
     p.add_argument("--apply", action="store_true")
     p.add_argument("--min-len", type=int, default=8)
     p.add_argument("--max-len", type=int, default=1500)
     p.set_defaults(fn=cmd_import_user)
 
-    p = sub.add_parser("decide")
+    p = sub.add_parser("decide", help="记一个「选 A 不选 B」的决定")
     p.add_argument("--title", help="一句话结论（默认：选了 X）")
     p.add_argument("--options", help="还考虑过哪些，逗号分隔")
     p.add_argument("--chose", required=True, help="选了哪个")
@@ -3194,21 +3194,21 @@ def main() -> int:
     p.add_argument("--ref", nargs="*", type=int, help="相关事件 id")
     p.set_defaults(fn=cmd_decide)
 
-    p = sub.add_parser("audit-conflicts")
+    p = sub.add_parser("audit-conflicts", help="查互相矛盾的记录")
     p.set_defaults(fn=cmd_audit_conflicts)
 
-    p = sub.add_parser("review")
+    p = sub.add_parser("review", help="回顾：叙事与事实两个视角摆一起")
     p.add_argument("--days", type=int, default=30, help="回看最近多少天（默认 30）")
     p.add_argument("--limit", type=int, default=20)
     p.set_defaults(fn=cmd_review)
 
-    p = sub.add_parser("drop")
+    p = sub.add_parser("drop", help="作废一条记错的记忆（不物理删）")
     p.add_argument("id", type=int)
     p.add_argument("--reason", required=True, help="为什么作废（会写进留痕）")
     p.add_argument("--weight", type=int, default=80)
     p.set_defaults(fn=cmd_drop)
 
-    p = sub.add_parser("forget")
+    p = sub.add_parser("forget", help="衰减：把该忘的降档（写 decay_log）")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--min-age", type=int, default=30, help="多少天以上的才算旧")
     # 2026-11-03 从 40 提到 50。实测：库里 w<=40 的只有 2 条，而 w 恰为 50 的
