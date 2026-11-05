@@ -1327,7 +1327,7 @@ def cmd_recall(a) -> int:
     # 「哪些事还没弄完」都命中；「有什么没完成的」「遗留问题」「欠的债」原来漏了，
     # 补进来。「没完成」跟「未完成」是两个词，中文里这类近义换字太多了。
     if any(w in q for w in ("没做", "还没", "待办", "未结", "未完成", "没完成",
-                            "下一步", "要做", "遗留问题", "欠的债", "欠债")):
+                            "下一步", "下一个", "要做", "遗留问题", "欠的债", "欠债")):
         _opens = [dict(r) for r in con.execute(
             "SELECT id, what, created_at, due FROM open_items WHERE status='open'"
             " ORDER BY id DESC LIMIT ?", (a.limit,))]
