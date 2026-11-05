@@ -6,6 +6,18 @@
 --   · MemOS：权重由 feedback 驱动；衰减要留痕（trace.priority_decayed 是独立事件）
 --   · HippoRAG：关联也是记忆（实体图 + 扩散），所以有 links 表
 --   · Ebbinghaus：R = e^(-t/S)，S 随权重增大 —— 越重要的忘得越慢
+--
+-- ⚠ **已知的「空字段」（2026-11-06 查证，逐个有据）** —— 分两类，处置不同：
+--   · **被取代的废字段**（零读零写，只留列不删因为迁移麻烦）：
+--       `facts.hits`（63 条恒 0，职责已由 `activation` 承担）
+--       `constraints.evidence`、`procedures.evidence`（全目录 grep 零匹配）
+--       `open_items.event_id`（同上）
+--   · **等不到输入的活字段**（有读、没写）：
+--       `constraints.active` —— 7 处 `WHERE active=1` 在读它，**但没有任何代码把它置 0**。
+--       也就是说「禁用一条约束」这个功能**不存在**。它是个待补的缺口，不是死字段。
+--       `facts.contradicted_by` —— 等 `conflict` 命令的输出来喂；那功能是「只出候选人来定」，
+--       所以它空着是正常的（当前确实没有该被推翻的配对）。
+--   ⇒ **判据：一个空字段要么该通电（补写入方），要么该拔插头（标注废弃）。别让它不明不白地空着。**
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
