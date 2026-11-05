@@ -1310,6 +1310,16 @@ def cmd_recall(a) -> int:
             cons = _sem_cons + [c for c in cons if c["id"] not in _seen_c]
             cons = cons[:a.limit]
 
+    # 2026-11-05 补：**未结项（open_items）也要能被检索到**。
+    # 由头：问「我说过要做什么还没做」，返回 no_match —— 而那 3 条未结项就躺在
+    # `open_items` 表里。这跟 constraints 层当初一模一样的病：某些层只给 brief 看，
+    # recall 压根不查。用户不知道答案在哪一层。
+    _opens = []
+    if any(w in q for w in ("没做", "还没", "待办", "未结", "未完成", "下一步", "要做")):
+        _opens = [dict(r) for r in con.execute(
+            "SELECT id, what, created_at, due FROM open_items WHERE status='open'"
+            " ORDER BY id DESC LIMIT ?", (a.limit,))]
+
     # 记忆成熟期（2026-11-05）：只有被 recall 真正带出来的事实才算「被使用过」，
     # 每次 +0.08、上限 1.0 —— 成熟靠被使用，不靠等待。
     # 只给前 3 条加，理由与 events.hits 相同：一次返回十几条，真会被看的就前几条。
@@ -1361,6 +1371,9 @@ def cmd_recall(a) -> int:
     _q_rest = re.sub(r"[我你他她它的了吗呢啊吧？，,。\s]", "", _q_rest)
     kind_hit = (_kd is not None and len(_q_rest) < 6
                 and any(r.get("kind") == _kd for r in rows))
+    # 未结项命中（2026-11-05）：问「我说过要做什么还没做」，答案就在 open_items 里。
+    # 不加这条的话，verdict 会说 no_match —— 明明有 3 条摆在那儿。
+    open_hit = bool(_opens)
     # 程序层也要够格（2026-11-05）。单条命中本身不算 —— 「今天发生过量子纠缠香蕉飞船吗」
     # 曾凭 2-gram 撞上 procedure 8 的 steps 被判 found。但直接要求「>=2 个线索」又太严：
     # eval #32「角色突然自己讲起故事」原本靠程序层命中，收紧后 hit@10 掉到 48。
@@ -1368,7 +1381,7 @@ def cmd_recall(a) -> int:
     strong_procs = any(v["n"] >= 2 for v in proc_cues.values())
     proc_ok = bool(procs) and (top_cov >= 0.50 or any_strong)
     if ((top_cov >= 0.55 and top_nhit >= 2) or vec_top >= 0.60 or any_strong
-            or strong_facts or strong_procs or proc_ok or kind_hit):
+            or strong_facts or strong_procs or proc_ok or kind_hit or open_hit):
         verdict = "found"
         note = ""
     elif total:
@@ -1427,7 +1440,7 @@ def cmd_recall(a) -> int:
           "tried": attempts, "count": len(rows),
           "episodes": episodes, "assoc": assoc,
           "hits": rows, "facts": facts, "procedures": procs,
-          "constraints": cons})
+          "constraints": cons, "open_items": _opens})
     return 0
 
 
