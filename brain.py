@@ -2786,6 +2786,13 @@ def cmd_brief(a) -> int:
                            key=lambda f: -f["confidence"])
 
     # ── 事故 ──
+    # 2026-11-05 记：这里和 `cmd_rehearse` 里 risk 判定用的 `acc` **不是同一个口径** ——
+    #   · rehearse 的 risk：线索命中的那批事件里，kind=accident 占多少（比例 + 条数）；
+    #   · brief 这里：全部 accident 里，标题词面命中线索的。
+    # 实测会有「risk=medium 但 accidents=0」的情况（「删东西前要注意什么」：
+    # 线索命中的事件里有 2+ 起事故，但那些事故的标题没精确命中线索）。
+    # **试着统一过，改坏了**（brief 里没有 rehearse 的 `acc`，直接 NameError）——
+    # 两个函数各有各的线索池，硬并会出错。先保持现状，把差异记在这里。
     acc = [dict(r) for r in con.execute(
         "SELECT id,ts,title,weight FROM events WHERE superseded=0 AND kind='accident'")]
     rel_acc = [r for r in acc if hit(r["title"])]
