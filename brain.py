@@ -2716,14 +2716,13 @@ def cmd_brief(a) -> int:
                      if any_hit(p["name"] + " " + (p["when_to_use"] or ""))]
     rel_procs.sort(key=lambda p: -((p["fail_count"] or 0) - (p["success_count"] or 0)))
 
-    # ── 事实 ──
+    # ── 事实 ──（走统一判据，见 _pick_by_sem）
     if fsims:
-        ranked = sorted(zip(facts, fsims), key=lambda x: -x[1])
-        top_f = ranked[0][1] if ranked else 0.0
-        rel_facts = [f for f, s in ranked if s >= 0.50 and s >= top_f - 0.10]
+        rel_facts = _pick_by_sem(facts, fsims, "claim", min_sim=0.50, top_gap=0.10)
         # 自我画像优先：domain='self' 直接决定这一步要不要慢下来。
         # 2026-11-03 实测：不加这条，改配置问题会给出 6 条技术事实，
         # 却漏掉「改配置这类事我出过 5 次事」。
+        ranked = sorted(zip(facts, fsims), key=lambda x: -x[1])
         self_f = sorted([f for f, s in ranked
                          if f["domain"] == "self" and s >= 0.40],
                         key=lambda f: -f["confidence"])[:2]
