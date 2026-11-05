@@ -975,6 +975,7 @@ def cmd_recall(a) -> int:
         _added = 0
         for x in _extra:
             if x["id"] not in _have:
+                x["padded"] = True      # verdict 判定要能认出「这是补的，不是搜到的」
                 rows.append(x)
                 _have.add(x["id"])
                 _added += 1
@@ -993,6 +994,7 @@ def cmd_recall(a) -> int:
         _added2 = 0
         for x in _hi:
             if x["id"] not in _have:
+                x["padded"] = True
                 rows.append(x)
                 _have.add(x["id"])
                 _added2 += 1
@@ -1011,6 +1013,7 @@ def cmd_recall(a) -> int:
         _added3 = 0
         for x in _kt:
             if x["id"] not in _have:
+                x["padded"] = True
                 rows.append(x)
                 _have.add(x["id"])
                 _added3 += 1
@@ -1238,20 +1241,29 @@ def cmd_recall(a) -> int:
         return [x["c"] for x in items[:a.limit]]
 
     def procs_by(ts):
-        out = []
+        """返回 (unique list, counted dict)。计数是为了 verdict 判定 ——
+        2026-11-05：原来只返回列表，`verdict` 里写的是 `or procs`，
+        于是**单个 gram 撞到一条程序就算 found**。实测「今天发生过量子纠缠香蕉飞船吗」
+        被判成 found，凭的就是 2-gram 撞上了 procedure 8 的 steps。
+        这跟当年 `or facts` 是同一个坑（那次改成要求 2 个线索命中）。
+        """
+        counted = {}
         for t in ts:
-            out += [dict(r) for r in con.execute(
+            for r in con.execute(
                 "SELECT id,name,when_to_use,steps,domain FROM procedures"
                 " WHERE name LIKE ? OR when_to_use LIKE ? OR steps LIKE ? LIMIT ?",
-                ("%" + t + "%",) * 3 + (a.limit,))]
-        seen, uniq = set(), []
-        for f in out:
-            if f["id"] not in seen:
-                seen.add(f["id"]); uniq.append(f)
-        return uniq[:a.limit]
+                ("%" + t + "%",) * 3 + (a.limit,)):
+                d = dict(r)
+                prev = counted.get(d["id"])
+                if prev is None:
+                    counted[d["id"]] = {"p": d, "n": 1}
+                else:
+                    prev["n"] += 1
+        items = sorted(counted.values(), key=lambda x: -x["n"])
+        return [x["p"] for x in items[:a.limit]], counted
 
     facts, fact_cues = facts_by(terms)
-    procs = procs_by(terms)
+    procs, proc_cues = procs_by(terms)
     cons = cons_by(terms)
 
     # 记忆成熟期（2026-11-05）：只有被 recall 真正带出来的事实才算「被使用过」，
@@ -1273,12 +1285,17 @@ def cmd_recall(a) -> int:
     #      （负例实测：靠单个 idf 极高的词就能拿 cov 1.0）
     #   ② 语义够近：top sim >= 0.55（负例实测都在 0.52 以下）
     #   ③ 命中英文标识符（28 号题唯一通路）
-    top_row = max(rows, key=lambda r: r.get("coverage") or 0.0) if rows else {}
+    # 2026-11-05：**补池进来的事件不能单独让 verdict 变 found**。
+    # 由头很具体：意图识别加了补池之后，「今天发生过量子纠缠香蕉飞船吗」被判成 found ——
+    # 时间窗补进来一批今天的事件，它们跟查询毫无关系，却满足了 found 的判据。
+    # 补池的语义是「多给几条候选」，不是「证明这事存在」。所以算 verdict 时只看非 padded 的。
+    _real = [r for r in rows if not r.get("padded")]
+    top_row = max(_real, key=lambda r: r.get("coverage") or 0.0) if _real else {}
     top_cov = top_row.get("coverage") or 0.0
     top_nhit = int(top_row.get("n_hit") or 0)
-    vec_top = max([r.get("from_vector") or 0.0 for r in rows], default=0.0)
+    vec_top = max([r.get("from_vector") or 0.0 for r in _real], default=0.0)
     any_strong = any(
-        r.get("strong") and (r.get("coverage") or 0.0) >= 0.15 for r in rows)
+        r.get("strong") and (r.get("coverage") or 0.0) >= 0.15 for r in _real)
     total = len(rows) + len(facts) + len(procs)
     # facts 要够格：至少被 2 个不同线索命中。单个 gram 撞上一条事实不算答案 ——
     # 中文 2-gram 的 OR 几乎必中，原来那句 `or facts` 会把库里没有的虚构问题判成 found。
@@ -1287,9 +1304,27 @@ def cmd_recall(a) -> int:
     # 该 kind 的事件 —— 这本身就是答案，不能因为词面覆盖率低被判成「线索不对」。
     # 不加这条的话，问「我学过哪些教训」会进下面那个 `rows = []` 分支，
     # 补池白补（实测：cue 里明明有 kind，输出却是 0 条）。
-    kind_hit = _kd is not None and any(r.get("kind") == _kd for r in rows)
+    # 2026-11-05：kind_hit 还得要求**查询是纯意图式的**。
+    # 否则「我学过哪些量子香蕉教训」也会 found —— 库里确实有 learn 事件，
+    # 但它们跟「量子香蕉」毫无关系。判据：把意图词和虚字去掉之后，
+    # 剩下的实义部分够短（<6 字），才认为用户要的就是「该 kind 的全部」。
+    _kd_words = ("事故", "踩过什么坑", "出过什么错", "翻过什么车", "教训", "学到", "反思",
+                 "做了什么决定", "做过什么决定", "哪些决定", "做过哪些取舍",
+                 "选了哪个", "选了什么方案", "取舍是什么", "被纠正", "纠正过", "被骂")
+    _q_rest = q
+    for _w in _kd_words:
+        _q_rest = _q_rest.replace(_w, "")
+    _q_rest = re.sub(r"[我你他她它的了吗呢啊吧？，,。\s]", "", _q_rest)
+    kind_hit = (_kd is not None and len(_q_rest) < 6
+                and any(r.get("kind") == _kd for r in rows))
+    # 程序层也要够格（2026-11-05）。单条命中本身不算 —— 「今天发生过量子纠缠香蕉飞船吗」
+    # 曾凭 2-gram 撞上 procedure 8 的 steps 被判 found。但直接要求「>=2 个线索」又太严：
+    # eval #32「角色突然自己讲起故事」原本靠程序层命中，收紧后 hit@10 掉到 48。
+    # 折中：**单线索可以，但要同时有词面覆盖率做担保**（top_cov>=0.15 或 strong）。
+    strong_procs = any(v["n"] >= 2 for v in proc_cues.values())
+    proc_ok = bool(procs) and (top_cov >= 0.15 or any_strong)
     if ((top_cov >= 0.55 and top_nhit >= 2) or vec_top >= 0.60 or any_strong
-            or strong_facts or procs or kind_hit):
+            or strong_facts or strong_procs or proc_ok or kind_hit):
         verdict = "found"
         note = ""
     elif total:
