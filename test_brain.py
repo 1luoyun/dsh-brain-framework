@@ -122,6 +122,26 @@ def main():
     _ids = [o.get("id") for o in ((w or {}).get("open_items") or [])]
     ok("未结项 id 正确", _ids == [1], str(_ids))
 
+    print("\n--- 禁令的停用/恢复（unconstrain）---")
+    # 2026-11-06 补。由头：`constraints.active` 原来 7 处读、零处写 ——
+    # 「禁用一条约束」这功能根本不存在。补了 unconstrain 之后必须锁住它，
+    # 否则下次谁改坏了 `constraints` 的 where 条件，这里不会出声。
+    c1 = js(["constrain", "--what", "沙盘测试约束", "--severity", "soft"])
+    cid = (c1 or {}).get("id")
+    ok("constrain 建约束", cid, "id=%s" % cid)
+    cs = js(["constraints"])
+    ok("默认只列 active", cs and cs.get("count") == 1, "count=%s" % (cs or {}).get("count"))
+    u1 = js(["unconstrain", str(cid), "--disable"])
+    ok("unconstrain --disable 生效", u1 and u1.get("active") == 0,
+       "active=%s" % (u1 or {}).get("active"))
+    cs2 = js(["constraints"])
+    ok("停用后默认视图看不到", cs2 and cs2.get("count") == 0, "count=%s" % (cs2 or {}).get("count"))
+    cs3 = js(["constraints", "--all"])
+    ok("--all 能看到停用的", cs3 and cs3.get("count") == 1 and cs3.get("active") == 0,
+       "count=%s active=%s" % ((cs3 or {}).get("count"), (cs3 or {}).get("active")))
+    u2 = js(["unconstrain", str(cid)])
+    ok("unconstrain 能恢复", u2 and u2.get("active") == 1, "active=%s" % (u2 or {}).get("active"))
+
     print("\n--- 情景分段 ---")
     con = sqlite3.connect(os.path.join(SAND, "brain.db"))
     n_ep = con.execute("SELECT count(*) FROM episodes").fetchone()[0]
