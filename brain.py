@@ -2630,8 +2630,6 @@ def cmd_brief(a) -> int:
 
     cons = [dict(r) for r in con.execute(
         "SELECT id,what,severity,violated FROM constraints WHERE active=1")]
-    rel_cons = sorted([c for c in cons if any_hit(c["what"], 2.0)],
-                      key=lambda c: (-c["violated"], c["id"]))
 
     procs = [dict(r) for r in con.execute(
         "SELECT id,name,when_to_use,success_count,fail_count,weak_steps FROM procedures")]
@@ -2659,12 +2657,35 @@ def cmd_brief(a) -> int:
     proc_texts = [p["name"] + "：" + (p["when_to_use"] or "") for p in procs]
     fact_texts = [f["claim"] for f in facts]
     user_texts = [u["title"] for u in users]
-    n_p, n_f = len(proc_texts), len(fact_texts)
-    alls = _sem_sims(q, proc_texts + fact_texts + user_texts) if (n_p + n_f + len(user_texts)) else None
-    if alls and len(alls) == n_p + n_f + len(user_texts):
-        psims, fsims, usims = alls[:n_p], alls[n_p:n_p + n_f], alls[n_p + n_f:]
+    # 2026-11-05 补：constraints 也要参与语义。原来它只做词面 any_hit ——
+    # 问「改 memory-refresh.bat 的步骤」时返回空，而库里明明有「改配置/组合：
+    # 先备份 → 改后解析校验 → 是否需重启」，只是查询里没有「配置」二字。
+    cons_texts = [c["what"] for c in cons]
+    n_p, n_f, n_c = len(proc_texts), len(fact_texts), len(cons_texts)
+    alls = (_sem_sims(q, proc_texts + fact_texts + user_texts + cons_texts)
+            if (n_p + n_f + len(user_texts) + n_c) else None)
+    if alls and len(alls) == n_p + n_f + len(user_texts) + n_c:
+        psims = alls[:n_p]
+        fsims = alls[n_p:n_p + n_f]
+        usims = alls[n_p + n_f:n_p + n_f + len(user_texts)]
+        csims = alls[n_p + n_f + len(user_texts):]
     else:
-        psims = fsims = usims = None
+        psims = fsims = usims = csims = None
+
+    # ── 禁令 ──
+    # 2026-11-05：改成「词面 or 语义」。原来只有词面 any_hit，问
+    # 「改 memory-refresh.bat 的步骤」时 constraints 返回空，而库里明明有
+    # 「改配置/组合：先备份 → 改后解析校验 → 是否需重启」—— 只是查询里没有「配置」二字。
+    if csims:
+        ranked_c = sorted(zip(cons, csims), key=lambda x: -x[1])
+        top_c = ranked_c[0][1] if ranked_c else 0.0
+        rel_cons = [c for c, s in ranked_c if s >= 0.50 and s >= top_c - 0.10]
+        _w = [c for c in cons if any_hit(c["what"], 2.0)]
+        _seen = {c["id"] for c in rel_cons}
+        rel_cons += [c for c in _w if c["id"] not in _seen]
+    else:
+        rel_cons = [c for c in cons if any_hit(c["what"], 2.0)]
+    rel_cons.sort(key=lambda c: (-(c["violated"] or 0), c["id"]))
 
     # ── 步骤 ──
     # 词面在这里必败：「删一个目录」与「删东西前的三步预检」只共享一个「删」字。
