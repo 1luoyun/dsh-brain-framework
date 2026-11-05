@@ -276,14 +276,21 @@ def cmd_link(a) -> int:
 
 def cmd_feedback(a) -> int:
     con = connect(); ensure_schema(con)
-    row = con.execute("SELECT id, weight FROM events WHERE id=?", (a.id,)).fetchone()
+    row = con.execute("SELECT id, weight, salience FROM events WHERE id=?", (a.id,)).fetchone()
     if not row:
         con.close(); emit({"ok": False, "error": "没有这条事件"}); return 1
     sign = "good" if a.good else ("bad" if a.bad else "correct")
     new_w = clamp(row["weight"] + FB[sign])
-    con.execute("UPDATE events SET weight=? WHERE id=?", (new_w, a.id))
+    # 2026-11-05：salience 从上线起就是**死字段** —— schema 注释写着「feedback 会推它」，
+    # 但这里只改 weight，从没碰过它，所以它恒等于 1.0，score() 里那个乘数等于不存在。
+    # weight（重要性，决定忘多慢）与 salience（显著度，决定多容易被唤起）在生物上
+    # 是两件事：一条教训可以很重要却很少想起，也可以不重却总在眼前。
+    # 所以 feedback 同时推 salience：幅度小、封顶 1.5，不喧宾夺主。
+    sal = min(1.5, round(float(row["salience"] or 1.0) * (1.05 if sign == "good" else 1.02), 3))
+    con.execute("UPDATE events SET weight=?, salience=? WHERE id=?", (new_w, sal, a.id))
     con.commit(); con.close()
-    emit({"ok": True, "id": a.id, "from": row["weight"], "to": new_w, "signal": sign})
+    emit({"ok": True, "id": a.id, "from": row["weight"], "to": new_w,
+          "salience": sal, "signal": sign})
     return 0
 
 
