@@ -188,6 +188,8 @@ INTENT_CASES = [
     ("最重要的教训", None, 90.0, "learn"),       # 同时点了程度和类型
     ("我学过哪些教训", None, None, "learn"),
     ("我做过哪些决定", None, None, "decision"),
+    ("有什么取舍", None, None, "decision"),      # 2026-11-05 补：这个说法原来漏了
+    ("哪里翻过车", None, None, "accident"),      # 同上（原来只有「翻过什么车」）
     ("我改配置出过什么事故", None, None, "accident"),
     ("我哪里被纠正过", None, None, "correction"),
 ]
