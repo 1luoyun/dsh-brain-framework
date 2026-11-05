@@ -1578,7 +1578,13 @@ def cmd_working(a) -> int:
         # 背景组轮转：优先取「上一轮没露过面」的最高分，取完再回头 ——
         # 这样它是一条条往后推，而不是两个固定集合互相跳（实测过：
         # 只降权 0.6 的话，A/B 两组会永远交替，池子里其它记忆永远轮不到）。
-        top_sorted = sorted(allrows, key=lambda r: (-(r["weight"] or 50), -score(r)))
+        #
+        # 2026-11-05 改：原来排的是 `(-weight, -score)` —— **weight 是主键**。
+        # 于是 weight 95 的旧事故（4440/4368）天天占着「当下该注意」的位置，
+        # 而当天新写的 learn（比如「度中心性不能用」）进不来。
+        # weight 是「这条多重」，score 是「多重 × 过了多久」—— 后者才是「现在该不该想它」。
+        # 排序键只用 score（它已经含 weight 与衰减），weight 仅作平手时的次序。
+        top_sorted = sorted(allrows, key=lambda r: (-score(r), -(r["weight"] or 50)))
         take([r for r in top_sorted if r["id"] not in last_ids] +
              [r for r in top_sorted if r["id"] in last_ids], n_top)
 
