@@ -73,6 +73,12 @@ CASES = [
     {"q": "人格一致性怎么实现",
      "expect": [],
      "note": "答案在知识库 04-人格，库里确实没有 —— 不许硬凑"},
+    # 类型意图的端到端（2026-11-05 补）。夹具只验「认不认得类型词」，
+    # 这条验的是「认出来之后真的能输出」—— 上轮就是补池了却被 verdict 二次否决，
+    # 输出 0 条。端到端才抓得住那种。
+    {"q": "我改配置出过什么事故",
+     "expect": [4535],
+     "note": "类型意图 accident：词面撞不上，靠 kind 补池"},
     # 答案不在记忆库里（在 AGENTS.md / 知识库）。这几条用来验证
     # 「该说没有的时候，别硬凑一堆不相干的」—— 不计入命中率，只记录。
     {"q": "备份一般放哪里、留几份", "expect": [], "note": "答案在 AGENTS.md，库里没有"},
@@ -157,35 +163,44 @@ def main():
     return 0 if (passed == len(scored) and not bad) else 1
 
 
-# 每个用例：查询、期望的 time_window、期望的 degree_intent 门限。
-# None 表示「不该触发」—— **这一列才是重点**，前两轮出问题都在这里。
+# 每个用例：查询、期望的 time_window、期望的 degree_intent 门限、期望的 kind。
+# None 表示「不该触发」—— **第三列和第四列的 None 才是重点**，出问题都在那里。
 INTENT_CASES = [
-    ("最近的备份放在哪", None, None),      # 问东西在哪，不是问时间
-    ("最后一个文件", None, None),          # 「最后」不是程度
-    ("最好用的搜索方式", None, None),
-    ("最近做了什么", 3.0, None),
-    ("今天都干了什么", 1.0, None),
-    ("昨天改了什么配置", 2.0, None),
-    ("我犯过最严重的错误", None, 90.0),
-    ("最重要的教训", None, 90.0),
+    ("最近的备份放在哪", None, None, None),      # 问东西在哪，不是问时间
+    ("最后一个文件", None, None, None),          # 「最后」不是程度
+    ("最好用的搜索方式", None, None, None),
+    ("删除文件", None, None, None),              # 有「删除」但不是问事故
+    ("怎么让 agent 别陷入循环", None, None, None),  # 「别」不是类型词
+    ("最近做了什么", 3.0, None, None),
+    ("今天都干了什么", 1.0, None, None),
+    ("昨天改了什么配置", 2.0, None, None),
+    ("我犯过最严重的错误", None, 90.0, None),
+    ("最重要的教训", None, 90.0, "learn"),       # 同时点了程度和类型
+    ("我学过哪些教训", None, None, "learn"),
+    ("我做过哪些决定", None, None, "decision"),
+    ("我改配置出过什么事故", None, None, "accident"),
+    ("我哪里被纠正过", None, None, "correction"),
 ]
 
 
 def check_intents():
-    """验 brain 里那两个意图识别：该触发的触发、不该触发的别触发。"""
+    """验 brain 里那三个意图识别：该触发的触发、不该触发的别触发。"""
     sys.path.insert(0, HERE)
     try:
         import brain
     except Exception as e:
         return ["import brain 失败：%s" % type(e).__name__]
     bad = []
-    for q, want_t, want_d in INTENT_CASES:
+    for q, want_t, want_d, want_k in INTENT_CASES:
         got_t = brain._time_window(q)
         got_d = brain._degree_intent(q)
+        got_k = brain._kind_intent(q)
         if got_t != want_t:
             bad.append("%s  time_window 期望 %s 实际 %s" % (q, want_t, got_t))
         if got_d != want_d:
             bad.append("%s  degree_intent 期望 %s 实际 %s" % (q, want_d, got_d))
+        if got_k != want_k:
+            bad.append("%s  kind_intent 期望 %s 实际 %s" % (q, want_k, got_k))
     return bad
 
 
