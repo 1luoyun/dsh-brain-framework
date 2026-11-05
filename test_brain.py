@@ -153,6 +153,32 @@ def main():
     ok("episodes 非空", n_ep > 0, "%d 段" % n_ep)
     ok("覆盖全部事件", ev <= covered, "%d/%d" % (len(ev & covered), len(ev)))
 
+    # 2026-11-06 补：MAX_EVENTS 条数闸门（纯函数测，不依赖沙盘数据量）。
+    # 由头：原来最大一段 218 条（连续工作 3 小时全粘一起），摘要必然丢细节；
+    # 而 `fold_singletons` 合并碎段时**没有长度上限**，会把 segment 切好的段又滚回去
+    # —— 所以这层必须同时验 segment 和 fold 两处。
+    import importlib.util as _ilu2
+    _sp = _ilu2.spec_from_file_location("_epmod", os.path.join(HERE, "episode.py"))
+    _ep = _ilu2.module_from_spec(_sp)
+    _sp.loader.exec_module(_ep)
+    _fake = []
+    for _k in range(100):
+        _fake.append({"id": _k + 1, "ts": "2026-11-06 10:%02d:00" % (_k % 60),
+                      "kind": "done", "title": "写正文 ch%d" % _k,
+                      "fingerprint": "done|写文|正文|ch%d" % _k, "weight": 50,
+                      "emotion": None})
+    _segs = _ep.segment(_fake, set())
+    ok("segment 每段不超过 MAX_EVENTS",
+       all(len(s["rows"]) <= _ep.MAX_EVENTS for s in _segs),
+       "段数=%d max=%d" % (len(_segs), max(len(s["rows"]) for s in _segs)))
+    _folded = _ep.fold_singletons(_segs, None)
+    ok("fold 之后仍不超过 MAX_EVENTS",
+       all(len(s["rows"]) <= _ep.MAX_EVENTS for s in _folded),
+       "段数=%d max=%d" % (len(_folded), max(len(s["rows"]) for s in _folded)))
+    ok("100 条假事件全部保留（不丢数据）",
+       sum(len(s["rows"]) for s in _folded) == 100,
+       str(sum(len(s["rows"]) for s in _folded)))
+
     print("\n--- 衰减 ---")
     # 把两条事件的时间改成 60 天前，再跑 forget
     con = sqlite3.connect(os.path.join(SAND, "brain.db"))
