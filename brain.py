@@ -1404,7 +1404,8 @@ def cmd_recall(a) -> int:
                     continue
                 seen.add(r["o"])
                 row = con.execute(
-                    "SELECT id,kind,title FROM events WHERE id=?", (r["o"],)).fetchone()
+                    "SELECT id,kind,title FROM events WHERE id=? AND superseded=0",
+                    (r["o"],)).fetchone()
                 # 只收 0.70 以上的：实测 0.6~0.7 那一档噪声太多
                 # （「人味掉了」能连到「AI 工具台」「DSH 升级」——都不是一回事）。
                 if row and float(r["note"] or 0) >= 0.70:
@@ -1654,7 +1655,11 @@ def cmd_similar(a) -> int:
         con.close(); emit({"ok": False, "error": "没有这条事件"}); return 1
     my_all = set((me["fingerprint"] or "").split("|"))
     my = my_all - {me["kind"]}          # kind 单独算，不占"要素"名额
-    rows = con.execute("SELECT id,ts,kind,title,weight,fingerprint FROM events WHERE id!=?", (a.id,)).fetchall()
+    # 2026-11-05 补 superseded=0：原来只写 `WHERE id!=?`，作废事件（3061 条、
+    # 占 46%）也会被当成「同型事件」混进来 —— 它们已经不参与任何检索了，
+    # 在 similar 里冒出来纯属噪音。
+    rows = con.execute("SELECT id,ts,kind,title,weight,fingerprint FROM events"
+                       " WHERE id!=? AND superseded=0", (a.id,)).fetchall()
     scored = []
     for r in rows:
         theirs_all = set((r["fingerprint"] or "").split("|"))
