@@ -233,14 +233,39 @@ def check_link_integrity(con):
         "SELECT COUNT(*) FROM event_emb m WHERE EXISTS"
         " (SELECT 1 FROM events e WHERE e.id = m.id AND e.superseded = 1)"
     ).fetchone()[0]
-    if bad_links or bad_emb:
+    # 2026-11-05 补：`facts.evidence` 和 `episodes.event_ids` 也是事件 id 的引用表，
+    # 之前两项没查它们。实测都是干净的（evidence 空 0 条、456 段情景零悬空），
+    # 但这两张表是 consolidate / episode 每次重建时写的 —— 最可能出问题的正是重建。
+    bad_ev = 0
+    for _fid, _ev in con.execute("SELECT id, evidence FROM facts"):
+        _s = str(_ev or "")
+        for _tok in _s.strip("[]").split(","):
+            _tok = _tok.strip()
+            if not _tok.isdigit():
+                continue
+            if not con.execute("SELECT 1 FROM events WHERE id=?", (int(_tok),)).fetchone():
+                bad_ev += 1
+    bad_ep = 0
+    for _eid, _ids in con.execute("SELECT id, event_ids FROM episodes"):
+        _s = str(_ids or "")
+        for _tok in _s.strip("[]").split(","):
+            _tok = _tok.strip()
+            if not _tok.isdigit():
+                continue
+            if not con.execute("SELECT 1 FROM events WHERE id=?", (int(_tok),)).fetchone():
+                bad_ep += 1
+    if bad_links or bad_emb or bad_ev or bad_ep:
         add("引用完整性", False,
-            "links 有 %d 条断链或指向作废事件；event_emb 有 %d 条作废事件的向量"
-            % (bad_links, bad_emb))
+            "links 断链/作废 %d；向量作废 %d；facts.evidence 悬空 %d；episodes 悬空 %d"
+            % (bad_links, bad_emb, bad_ev, bad_ep))
         return
     nl = con.execute("SELECT COUNT(*) FROM links").fetchone()[0]
     nm = con.execute("SELECT COUNT(*) FROM event_emb").fetchone()[0]
-    add("引用完整性", True, "links %d 条、向量 %d 条，两端均存活" % (nl, nm))
+    nf = con.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+    np_ = con.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
+    add("引用完整性", True,
+        "links %d 条、向量 %d 条、facts %d 条、episodes %d 段，引用均存活"
+        % (nl, nm, nf, np_))
 
 
 def check_working():
