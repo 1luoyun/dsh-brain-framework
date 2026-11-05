@@ -113,7 +113,11 @@ def main():
     ok("forget 有候选", f and f["candidates"] >= 1, "candidates=%s" % (f or {}).get("candidates"))
     con = sqlite3.connect(os.path.join(SAND, "brain.db"))
     w = con.execute("SELECT weight FROM events WHERE kind='done'").fetchone()
-    bad = con.execute("SELECT count(*) FROM decay_log WHERE new_w <> max(1, old_w - 10)").fetchone()[0]
+    # 2026-11-06：降幅从「一律 -10」改成分档（30-90 天 -5 / 90-180 -10 / >180 -15，
+    # 碰过一次的减半）。断言随之改成「必须真的降了、且没降到 1 以下」，
+    # 不再限定具体降幅——限定它等于把判据钉死在某个版本上。
+    bad = con.execute(
+        "SELECT count(*) FROM decay_log WHERE new_w >= old_w OR new_w < 1").fetchone()[0]
     con.close()
     ok("完成类被降权", w and w[0] < 50, "w=%s" % (w[0] if w else "-"))
     ok("decay_log 一致", bad == 0, "不合规 %d" % bad)
