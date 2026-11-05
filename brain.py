@@ -1047,6 +1047,30 @@ def cmd_recall(a) -> int:
                        key=lambda x: (-(x["f"]["confidence"] * (x["f"]["activation"] or 1.0)), -x["n"]))
         return [x["f"] for x in items[:a.limit]], counted
 
+    def cons_by(ts):
+        """禁令层（constraints）也要参与 recall。
+
+        2026-11-05 立。由头：拿 10 个「我平时真会问」的问题做验收，
+        「哪些目录绝对不能碰」返回的全是当天技术记忆 —— 而正确答案
+        （`~/.dsh、Programs\\DSH*、Windows 是绝对禁区`）一直躺在 constraints 表里，
+        recall 只是从来不查这张表，只有 brief 查。用户不知道答案在哪一层，
+        所以每一层都得能被检索到。
+        """
+        counted = {}
+        for t in ts:
+            for r in con.execute(
+                "SELECT id, what, severity, violated FROM constraints"
+                " WHERE active=1 AND what LIKE ? ORDER BY severity, violated DESC LIMIT ?",
+                ("%" + t + "%", a.limit)):
+                d = dict(r)
+                prev = counted.get(d["id"])
+                if prev is None:
+                    counted[d["id"]] = {"c": d, "n": 1}
+                else:
+                    prev["n"] += 1
+        items = sorted(counted.values(), key=lambda x: (-x["n"], x["c"]["id"]))
+        return [x["c"] for x in items[:a.limit]]
+
     def procs_by(ts):
         out = []
         for t in ts:
@@ -1062,6 +1086,7 @@ def cmd_recall(a) -> int:
 
     facts, fact_cues = facts_by(terms)
     procs = procs_by(terms)
+    cons = cons_by(terms)
 
     # 记忆成熟期（2026-11-05）：只有被 recall 真正带出来的事实才算「被使用过」，
     # 每次 +0.08、上限 1.0 —— 成熟靠被使用，不靠等待。
@@ -1150,7 +1175,8 @@ def cmd_recall(a) -> int:
     emit({"ok": True, "query": q, "verdict": verdict, "note": note,
           "tried": attempts, "count": len(rows),
           "episodes": episodes, "assoc": assoc,
-          "hits": rows, "facts": facts, "procedures": procs})
+          "hits": rows, "facts": facts, "procedures": procs,
+          "constraints": cons})
     return 0
 
 
