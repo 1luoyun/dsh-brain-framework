@@ -2919,11 +2919,29 @@ def cmd_source(a) -> int:
             "text": (text or "")[:a.max_chars],
         })
 
+    # 2026-11-05 改：note 要**分情况**说，不能一句通用的。
+    # 原来不管哪种情况都是「当前正在进行的会话可能还没有」—— 而实测有两种 found=0：
+    # ① 这条属于**当前会话**（扫描是异步的，必然取不到，等一会儿再来）；
+    # ② 那条事件所在的**旧会话压根没进索引**（等多久都没用，得先扫描那个会话）。
+    # 这两种的处置完全不同，混成一句话会让我对着永远等不到的东西干等。
+    if out:
+        note = ""
+    else:
+        _cur = (ev["session"] or "")
+        try:
+            _now_sess = _current_session()
+        except Exception:
+            _now_sess = None
+        if _now_sess and _cur == _now_sess:
+            note = ("这条属于**当前正在进行的会话** —— 会话索引是异步扫描的，"
+                    "所以现在取不到；等这轮结束后再试，或直接用 recall --with-user 查原文。")
+        else:
+            note = ("这条所在的会话没有进索引（索引只覆盖已扫描过的会话）。"
+                    "这不是「原文丢了」——重启后宿主没扫它，或者它比索引建立得早。")
     emit({"ok": True, "event": {"id": ev["id"], "ts": ev["ts"], "kind": ev["kind"],
                                 "title": ev["title"], "session": ev["session"]},
           "window_minutes": a.window, "found": len(out), "docs": out,
-          "note": ("索引里只有已扫描过的会话；当前正在进行的会话可能还没有。"
-                   if not out else "")})
+          "note": note})
     return 0
 
 
