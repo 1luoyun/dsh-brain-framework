@@ -45,7 +45,11 @@ ALLOWED_FILES = {".gitignore", "README.md", "health.py", "eval.py", "eval_cases.
                  "eval_synth.py", "eval_vs.py", "test_brain.py", "embed.py", "brain.db",
                  "brain.py", "cluster.py", "consolidate.py", "episode.py",
                  "import_tasklog.py", "schema.sql", "脑区映射.md", "check_readme.py",
-                 "embed_server.py", "brain.db-wal", "brain.db-shm"}
+                 "embed_server.py", "brain.db-wal", "brain.db-shm",
+                 # 2026-11-05 新增（加完忘了登记，health 当场报「目录脏」—— 这闸门是有效的）：
+                 "assoc.py",          # 语义近邻边生成器
+                 "field_lifecycle.py"  # 静态查「只读不写」字段
+                 }
 
 RESULTS = []
 
