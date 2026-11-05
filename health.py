@@ -302,6 +302,50 @@ def check_self_md(con=None):
     add("SELF.md", True, "%d 字符，UTF-8 无 BOM，含装配时刻" % len(txt))
 
 
+def check_episode_size(con):
+    """episodes 的段长不能超过 MAX_EVENTS（2026-11-06 立）。
+
+    由头：实测最大一段 218 条（2026-10-10 连续工作 3 小时全粘一起），摘要必然丢细节。
+    修了 `segment()` 和 `fold_singletons()` 两处之后，再加这一项守着 —— 因为它**会悄悄退化**：
+    `fold_singletons` 合并碎段时如果没有长度闸门，就会把 segment 切好的段又滚回去，
+    而那一步**不报错、不影响任何检索**，只有人去看分布才会发现。
+
+    判据三条：没有超限的段、段数 > 0、事件总数与活跃事件数对得上（防「切得太狠丢数据」）。
+    """
+    try:
+        rows = con.execute("SELECT event_count FROM episodes").fetchall()
+    except Exception as e:
+        add("分段粒度", False, "查 episodes 失败：%s" % type(e).__name__)
+        return
+    if not rows:
+        add("分段粒度", False, "episodes 为空")
+        return
+    lens = [r[0] or 0 for r in rows]
+    # 上限跟 episode.py 的常量对齐（不在两处各写一份数字）
+    limit = 60
+    try:
+        import importlib.util as _ilu
+        _sp = _ilu.spec_from_file_location("_epchk", os.path.join(HERE, "episode.py"))
+        _m = _ilu.module_from_spec(_sp)
+        _sp.loader.exec_module(_m)
+        limit = int(getattr(_m, "MAX_EVENTS", limit))
+    except Exception:
+        pass
+    over = [x for x in lens if x > limit]
+    total = sum(lens)
+    live = con.execute("SELECT COUNT(*) FROM events WHERE superseded=0").fetchone()[0]
+    detail = "段数 %d、最大 %d、平均 %.1f" % (len(lens), max(lens), total / len(lens))
+    if over:
+        add("分段粒度", False, "%d 段超过上限 %d（最大 %d）—— 合并那一步可能又没设闸门"
+            % (len(over), limit, max(lens)))
+        return
+    if total < live:
+        add("分段粒度", False, "段内事件共 %d，少于活跃事件 %d —— 可能有事件没进任何段"
+            % (total, live))
+        return
+    add("分段粒度", True, detail + "，覆盖 %d 条活跃事件" % live)
+
+
 def check_working():
     try:
         out = subprocess.run(
@@ -401,7 +445,7 @@ def main():
     con = connect()
     for fn in (check_tables, check_schema, check_events, check_derived, check_episodes,
                check_evidence, check_decay, check_sleep_log, check_link_integrity,
-               check_self_md, check_meta, check_corrections):
+               check_self_md, check_episode_size, check_meta, check_corrections):
         try:
             fn(con)
         except Exception as e:
