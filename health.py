@@ -47,8 +47,11 @@ ALLOWED_FILES = {".gitignore", "README.md", "health.py", "eval.py", "eval_cases.
                  "import_tasklog.py", "schema.sql", "脑区映射.md", "check_readme.py",
                  "embed_server.py", "brain.db-wal", "brain.db-shm",
                  # 2026-11-05 新增（加完忘了登记，health 当场报「目录脏」—— 这闸门是有效的）：
-                 "assoc.py",          # 语义近邻边生成器
-                 "field_lifecycle.py"  # 静态查「只读不写」字段
+                 # 同日犯过两次（第一次是 assoc.py + field_lifecycle.py，第二次是 realcheck.py）
+                 # ⇒ 往后在 brain 目录下新建 .py，**同一步**就把名字加进这里。
+                 "assoc.py",           # 语义近邻边生成器
+                 "field_lifecycle.py",  # 静态查「只读不写」字段
+                 "realcheck.py"         # 真实场景验收（跟 eval 并列的另一把尺子）
                  }
 
 RESULTS = []
