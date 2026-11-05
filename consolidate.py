@@ -112,19 +112,19 @@ RULES = [
     dict(
         name="GBK 字形会当场崩",
         pattern=r"GBK|UnicodeEncodeError|无字形|⚠",
-        claim="GBK 控制台里 print 到没有字形的字符（箭头、警示符号、emoji）会当场 UnicodeEncodeError；要进日志的提示行一律纯 ASCII",
+        claim="中文编码三类问题之一（字形不存在）：GBK 控制台里 print 到没有字形的字符（箭头、警示符号、emoji）会当场 UnicodeEncodeError；要进日志的提示行一律纯 ASCII",
         domain="encoding", min_hits=1,
     ),
     dict(
         name="读回方向会搞反",
         pattern=r"解码方向|按 UTF-8 解|GBK 写.*UTF-8 读|ufffd",
-        claim="子进程输出的解码方向最易搞反：python 的 stdout 是 GBK、设过 OutputEncoding 的 PowerShell 是 UTF-8；搞反的产物是乱码或 U+FFFD",
+        claim="中文编码三类问题之二（解码方向搞反）：子进程输出的解码方向最易搞反 —— python 的 stdout 是 GBK、设过 OutputEncoding 的 PowerShell 是 UTF-8；搞反的产物是乱码或 U+FFFD",
         domain="encoding", min_hits=1,
     ),
     dict(
         name=".bat 不能写中文注释",
         pattern=r"\.bat.*中文|中文注释.*bat|OEM.*bat",
-        claim="`.bat` 里写中文注释会让 cmd 按 OEM 码页把整行当命令执行，后续全部失效；注释必须纯 ASCII",
+        claim="中文编码三类问题之三（bat 注释）：`.bat` 里写中文注释会让 cmd 按 OEM 码页把整行当命令执行，后续全部失效；注释必须纯 ASCII",
         domain="encoding", min_hits=1,
     ),
 
