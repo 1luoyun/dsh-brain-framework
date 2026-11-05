@@ -87,6 +87,20 @@ def check_events(con):
         "非作废 %d 条；ts 格式异常 %d；无指纹 %d" % (total, bad_ts, no_fp))
 
 
+def check_derived(con):
+    """派生一致性：作废事件的向量有没有清干净。
+
+    2026-11-06 实测：去重 + 清理之后，event_emb 里躺着 3042 条已作废事件的向量
+    —— 没人发现，因为没有任何检查在看这件事。作废只改 events，派生视图不会自动跟着清。
+    这里只报「孤儿向量」（属于作废事件的），不做修复；修复走 `brain.py purge-derived --apply`。
+    """
+    n = con.execute(
+        "SELECT count(*) FROM event_emb WHERE id IN"
+        " (SELECT id FROM events WHERE superseded=1)").fetchone()[0]
+    add("派生一致性", n == 0,
+        "孤儿向量 %d 条" % n + ("（跑 brain.py purge-derived --apply 清）" if n else ""))
+
+
 def check_episodes(con):
     n = con.execute("SELECT count(*) FROM episodes").fetchone()[0]
     ev = {r[0] for r in con.execute("SELECT id FROM events WHERE superseded=0")}
@@ -138,15 +152,24 @@ def check_evidence(con):
 
 
 def check_decay(con):
+    """衰减留痕的一致性。
+
+    2026-11-06 改判据：原来断言 `new_w == max(1, old_w - 10)`，把「降幅恒为 10」
+    钉死在了体检里。而 cmd_forget 已改成分档（30-90 天 -5 / 90-180 -10 / >180 -15，
+    碰过一次的降幅减半）—— 于是这条检查对每一次合规的降权都报红，成了噪音源。
+    现在的判据只问两件事：**确实降了（new_w < old_w）** 且 **没跌破 1**。
+    降幅是多少由 cmd_forget 决定，不该由体检替它做主。
+    """
     bad = 0
     n = 0
     for r in con.execute("SELECT old_w, new_w FROM decay_log"):
         n += 1
-        expect = max(1, (r["old_w"] or 0) - 10)
-        if r["new_w"] != expect:
+        old_w = r["old_w"] or 0
+        new_w = r["new_w"]
+        if new_w is None or new_w >= old_w or new_w < 1:
             bad += 1
     add("衰减一致性", bad == 0,
-        "decay_log %d 条；不符合 max(1,old-10) 的 %d 条" % (n, bad))
+        "decay_log %d 条；不是「降了且不低于 1」的 %d 条" % (n, bad))
 
 
 def check_working():
@@ -171,7 +194,10 @@ def check_meta(con):
 
 
 def check_dir():
-    have = set(os.listdir(HERE))
+    # __pycache__ / .pytest_cache / .mypy_cache 是跑 Python 的正常产物，不算「目录脏」。
+    # 2026-11-06 实测：每次跑完测试它就冒出来，报红纯属噪音——噪音多了体检会被忽略。
+    IGNORE = {"__pycache__", ".pytest_cache", ".mypy_cache"}
+    have = {n for n in os.listdir(HERE) if n not in IGNORE}
     extra = sorted(n for n in have if n not in ALLOWED_FILES)
     add("目录干净", not extra, "多余条目：%s" % (extra or "无"))
 
@@ -243,7 +269,7 @@ def main():
         return 1
 
     con = connect()
-    for fn in (check_tables, check_schema, check_events, check_episodes,
+    for fn in (check_tables, check_schema, check_events, check_derived, check_episodes,
                check_evidence, check_decay, check_meta, check_corrections):
         try:
             fn(con)

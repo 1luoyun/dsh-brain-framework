@@ -123,7 +123,13 @@ CREATE TABLE IF NOT EXISTS facts (
   created_at      TEXT    NOT NULL,
   -- 下面两列同样是 ALTER 加进真库后没同步进来的（2026-11-03 由 test_brain.py 抓到）
   domain          TEXT,                        -- dsh / fs / encoding / judge / runtime / pattern
-  hits            INTEGER NOT NULL DEFAULT 0    -- 被 recall 带出来的次数
+  hits            INTEGER NOT NULL DEFAULT 0,   -- 被 recall 带出来的次数
+  -- 2026-11-05 加：记忆成熟期（对标 arXiv 2605.08538 的 engram maturation）。
+  -- 依据 Kitamura 的发现：记忆痕迹形成即刻，但**先是沉默的**，之后才变得可检索。
+  -- 所以新事实不该一落地就跟沉淀多年的老规则抢同一份注意力。
+  -- 规则：新事实从 0.45 起，每次被 recall 带进前列 +0.08、上限 1.0；
+  --      迁移时已有的 facts 全给 1.0（它们已经沉淀过，不该被新规则压）。
+  activation      REAL    NOT NULL DEFAULT 1.0
 );
 
 -- ═══════════════════════════════════════════════════════════

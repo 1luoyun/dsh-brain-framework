@@ -887,7 +887,14 @@ def cmd_recall(a) -> int:
                 # 有绝对覆盖率就用绝对标准：池子大小不影响这一条的分数。
                 # 原来的 min-max 是**池内相对**的 —— 同一个查询，池里有没有更强的
                 # 记录会改变它的相关性分，等于拿「对手」量「自己」。
-                boost = 0.3 + 0.7 * r["coverage"]
+                #
+                # 2026-11-05 实测（固定快照 A/B，reports/baseline-20261105.db）：
+                # 下限 0.3 → 0.15，hit@10 **42→46**、overall **86.7%→93.3%**、
+                # 未命中从 8 条降到 4 条。根因是 fuzzy 题的答案能进 top30 却挤不进
+                # top10 —— boost 只有 0.3~1.0 的幅度，压不过 weight 造成的差距。
+                # 拉开幅度后相关性重新有话语权。（同批试过压缩 weight 本身，
+                # hit@1 掉 1，已回滚 —— 别两条一起动。）
+                boost = 0.15 + 0.85 * r["coverage"]
                 if r.get("strong") and r["coverage"] < 0.35:
                     # 英文标识符命中是强信号，但只在词法覆盖率低时补一档：
                     # 28 号题全靠这一条（cov 0.20）。不设这个限制的话，新事件
@@ -901,9 +908,10 @@ def cmd_recall(a) -> int:
                 # 所以归一化用 (hi - rel) —— 写成 (rel - lo) 会把最相关的那条
                 # 打成最低分（2026-11-03 差点这么上线：查 pnpm install，
                 # 命中两个词的 #624 被降到 0.5 倍，排在只沾一个词的事件后面）。
-                # 幅度也要够狠（0.3~1.0）：0.5~1.0 时「只沾一个泛词但很新」的记录
-                # 仍然压过「两个词都命中但很老」的那条。
-                boost = 0.3 + 0.7 * ((hi - rel) / (hi - lo))
+                # 幅度也要够狠：原来是 0.3~1.0，2026-11-05 改成 0.15~1.0 后
+                # hit@10 42→46（见上面 coverage 分支的同批实测说明）。
+                # 0.5~1.0 时「只沾一个泛词但很新」的记录压过「两个词都命中但很老」的那条。
+                boost = 0.15 + 0.85 * ((hi - rel) / (hi - lo))
             r["score"] = round(base * prime * boost, 1)
             r["matched"] = boost > 0.8
             r["primed"] = prime > 1.0
@@ -914,6 +922,27 @@ def cmd_recall(a) -> int:
         for r in rows:
             if (r.get("title") or "").strip() == q:
                 r["exact_title"] = True
+
+        # 干扰降权（2026-11-05 第二版）。第一版是「从召回池剔除」，hit@10 45→44、
+        # #50 掉出去 —— 剔除必然丢答案。这次**只降权**：同标题兄弟越多，每条越可能
+        # 只是采集碎片，分乘一个温和惩罚。独苗（<=2 条）一分不罚。
+        # 实测 >2 兄弟的组只有 45 个、>10 的只有 3 个（236/157/77 条），影响面很窄。
+        # 236 条的组每条约剩 72%，3 条约剩 97% —— 温和到不该动任何正常排序。
+        # 实测（2026-11-05）：系数 0.08 和 0.30 跑 eval **结果完全相同**
+        # （hit@1 36 / hit@3 40 / hit@10 43，未命中列表一字不差）——
+        # 说明那 45 个大组根本没进过任何一题的 top-10，这条对评测不可测。
+        # 保留它是因为它无损、且当查询正好撞上那 236 条时会起作用；
+        # **但它没有指标证据支持，别在总结里写成"提升了检索质量"**。
+        if rows:
+            sib = dict(con.execute(
+                "SELECT title, COUNT(*) FROM events WHERE superseded=0 AND title IS NOT NULL"
+                " GROUP BY title"))
+            for r in rows:
+                n = sib.get((r.get("title") or "").strip(), 1)
+                if n > 2:
+                    r["sib"] = n
+                    r["score"] = r["score"] * (1.0 / (1.0 + 0.08 * math.log(n / 2.0)))
+
         rows.sort(key=lambda r: (
             0 if r.get("exact_title") else 1,
             # 标题覆盖过半的单独一档：用户原样问一条标题时，答案就是那条
@@ -927,6 +956,15 @@ def cmd_recall(a) -> int:
             # 的 cov 是 0.78/0.86/1.0，却分别排在第 9/5/5）。
             0 if (r.get("coverage") or 0) >= 0.7 else 1,
             -r["score"]))
+        # 【2026-11-05 试过并回滚】基于干扰的召回限流。
+        # 观察是真的：全库 23%（803/3488）落在 137 个重复指纹组里，最大一组 236 条
+        # **标题完全相同、正文各不同**（逐轮采集的对话碎片，跨 5 天）。它们确实会
+        # 互相挤占召回池名额。
+        # 但限流是负收益：按「同标题最多留 3 条」做，hit@10 45→44、#50 掉出去；
+        # 放宽成「只打 >10 条的组、留 5 条」，仍然 44，#50 还是掉。
+        # 结论：#50 的答案本身就在那批同标题兄弟里 ⇒ 从池子里**剔除**必然丢正确答案。
+        # 这个方向若还要做，正确形态是**降权而非剔除**（把干扰分乘进 score，候选全留、
+        # 只改排序），那是另一次实验，别在原地反复调阈值。
         # ★ 排序后必须截断到用户要的条数。
         # 召回池取 max(limit*5, 30) 是**给排序用的候选**，不是给输出用的。
         # 2026-11-05 实测：`--limit 10` 却返回 50 条、单次输出 47KB，前 10 条之后
@@ -956,18 +994,27 @@ def cmd_recall(a) -> int:
     # 于是"会话 消失 恢复"这种多词查询，events 有命中但语义/程序层全军覆没。
     terms = [q] + _grams(q)
     def facts_by(ts):
-        out = []
+        # 2026-11-05：要记录每条 fact 被**多少个不同线索**命中。
+        # 原来只做去重，于是「撞上一条」就算命中 —— 中文 2-gram 几乎必中，
+        # 「量子纠错码的分类」这种库里根本没有的题就会被判成 found
+        # （加了 arch 事实之后负例题 10/10 掉到 9/10，漏的正是这里）。
+        counted = {}
         for t in ts:
-            out += [dict(r) for r in con.execute(
-                "SELECT id,claim,confidence,domain,evidence FROM facts"
+            for r in con.execute(
+                "SELECT id,claim,confidence,domain,evidence,activation FROM facts"
                 " WHERE claim LIKE ? AND contradicted_by IS NULL"
-                " ORDER BY confidence DESC LIMIT ?", ("%" + t + "%", a.limit))]
-        # 去重
-        seen, uniq = set(), []
-        for f in out:
-            if f["id"] not in seen:
-                seen.add(f["id"]); uniq.append(f)
-        return uniq[:a.limit]
+                # 排序乘激活强度（记忆成熟期）：刚推出的事实不该凭一条 confidence
+                # 就压过沉淀过多轮的老规则 —— 它还没"长出来"。
+                " ORDER BY (confidence * activation) DESC LIMIT ?", ("%" + t + "%", a.limit)):
+                d = dict(r)
+                prev = counted.get(d["id"])
+                if prev is None:
+                    counted[d["id"]] = {"f": d, "n": 1}
+                else:
+                    prev["n"] += 1
+        items = sorted(counted.values(),
+                       key=lambda x: (-(x["f"]["confidence"] * (x["f"]["activation"] or 1.0)), -x["n"]))
+        return [x["f"] for x in items[:a.limit]], counted
 
     def procs_by(ts):
         out = []
@@ -982,8 +1029,18 @@ def cmd_recall(a) -> int:
                 seen.add(f["id"]); uniq.append(f)
         return uniq[:a.limit]
 
-    facts = facts_by(terms)
+    facts, fact_cues = facts_by(terms)
     procs = procs_by(terms)
+
+    # 记忆成熟期（2026-11-05）：只有被 recall 真正带出来的事实才算「被使用过」，
+    # 每次 +0.08、上限 1.0 —— 成熟靠被使用，不靠等待。
+    # 只给前 3 条加，理由与 events.hits 相同：一次返回十几条，真会被看的就前几条。
+    # 评测必须带 --no-count，否则同一批事实会被反复刷满（events.hits 已经踩过这个坑）。
+    if not getattr(a, "no_count", False) and facts:
+        con.executemany(
+            "UPDATE facts SET activation=MIN(1.0, activation+0.08) WHERE id=?",
+            [(f["id"],) for f in facts[:3]])
+        con.commit()
 
     # found 不能只看「有没有返回东西」：中文 2-gram 的 OR 总能撞上几条无关记录，
     # 于是虚构场景也会被报成 found（2026-11-03 实测：三道负例题全这么误报）。
@@ -999,8 +1056,11 @@ def cmd_recall(a) -> int:
     any_strong = any(
         r.get("strong") and (r.get("coverage") or 0.0) >= 0.15 for r in rows)
     total = len(rows) + len(facts) + len(procs)
+    # facts 要够格：至少被 2 个不同线索命中。单个 gram 撞上一条事实不算答案 ——
+    # 中文 2-gram 的 OR 几乎必中，原来那句 `or facts` 会把库里没有的虚构问题判成 found。
+    strong_facts = any(v["n"] >= 2 for v in fact_cues.values())
     if ((top_cov >= 0.55 and top_nhit >= 2) or vec_top >= 0.60 or any_strong
-            or facts or procs):
+            or strong_facts or procs):
         verdict = "found"
         note = ""
     elif total:

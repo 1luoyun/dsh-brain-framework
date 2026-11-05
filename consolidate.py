@@ -194,6 +194,40 @@ RULES = [
         claim="报数字或据此写设计稿之前先确认口径版本：旧条款里的数（如「<1600 的 38 章」）可能是后来改过规则的旧值，不能当现值用",
         domain="judge", min_hits=1,
     ),
+
+    # ── 同步与评测（2026-11-06 加：这两天踩出来的）────────────
+    dict(
+        name="改副本等于没改",
+        pattern=r"拷贝.*盖回|源文件没动|改的是.*拷贝|一份源码.*一份副本",
+        claim="同一份代码有「源码 + 副本」两处时，只改副本等于没改：下次从源拷过去会把它盖回来。"
+              "2026-11-06 实测两次——brain.py 的 session id、test_brain.py 的断言，"
+              "都是改了开源仓那份、源文件没动，隔一轮同步时旧内容原样回来了。改哪份就两份一起改。",
+        domain="workflow", min_hits=1,
+    ),
+    dict(
+        name="评测不能碰使用信号",
+        pattern=r"评测.*污染|hits.*刷|no-count|被测试摸过",
+        claim="评测与「真实使用」必须分开：recall 被评测调用时若不传 --no-count，"
+              "每轮都会给命中事件 +1 hits 并刷新 last_hit_at，几十轮之后全库都成了「用过」，"
+              "遗忘机制彻底失效。判据是真被用过，不是被测试摸过。",
+        domain="judge", min_hits=1,
+    ),
+    dict(
+        name="作废要同步清派生",
+        pattern=r"孤儿向量|派生.*没跟|作废.*向量.*还在|superseded.*event_emb",
+        claim="作废事件（superseded=1）只改 events 表，派生视图不会自动跟："
+              "2026-11-06 实测 event_emb 里躺着 3042 条已作废事件的向量，占空间还可能把删掉的内容带回检索。"
+              "处置用 `brain.py purge-derived --apply`，health 的 check_derived 会盯着。",
+        domain="fs", min_hits=1,
+    ),
+    dict(
+        name="降级跑出来的快是假的",
+        pattern=r"服务挂了.*当成|降级.*提速|embed_server.*挂|词面兜底",
+        claim="测性能前先确认依赖服务在听：语义服务挂掉时 _sem_sims 返回 None、走词面兜底，"
+              "brief 会从 6.38s 变成 2.29s —— 那个「变快」是降级不是优化。"
+              "判据：user_said 是否非空（空 = 降级）。2026-11-05 差点把它当提速交出去。",
+        domain="judge", min_hits=1,
+    ),
 ]
 
 
@@ -530,6 +564,70 @@ def self_model_facts(con):
     return out
 
 
+def arch_facts(con):
+    """记忆系统自身的元知识：这套东西是怎么运作的。
+
+    2026-11-05 立。由头很具体：4 道 fuzzy 题（「东西放久了会不会被忘干净」
+    「被人抄走拿去卖怎么办」「换一个环境还认得出我吗」）问的是**机制**，
+    但 eval 原来的期望答案标成了某条对话记录。探针实测：那些记录在全部
+    3491 条事件里的语义排名是 890 / 2385 / 3462 / 431 / 573 名 ——
+    问机制、答事件，换什么编码器都救不了。
+
+    所以补这一层：把「怎么运作」写成可检索的事实。依据是代码与已发生的事，
+    evidence 指回对应事件。**不写会变的数字**：参数改了这里要跟着改，
+    否则事实就腐化了（这也是它没写死「87 条」「42/50」这类快照值的理由）。
+    """
+    def evs(pat, limit=6):
+        try:
+            return [r[0] for r in con.execute(
+                "SELECT id FROM events WHERE superseded=0 AND (title LIKE ? OR body LIKE ?)"
+                " ORDER BY weight DESC LIMIT ?", ("%" + pat + "%", "%" + pat + "%", limit))]
+        except Exception:
+            return []
+
+    specs = [
+        ("衰减与遗忘的机制",
+         "记忆不会无声消失：检索分按 Ebbinghaus 衰减，强度 S=(weight/10)×7 天，越重要的忘得"
+         "越慢；降档分三档，每次降档都写进 decay_log 而不是静默改分 —— 「放久了会不会被忘干净」"
+         "的答案是：会按重要性分级衰减，而且每一步有账可查",
+         "衰减"),
+        ("保护规则",
+         "事故与纠错记录不参与衰减；被 recall 真正取用过的（hits>0）也受保护 —— "
+         "「被用过」才是抗遗忘的真正来源，而不是「重要」这一个维度",
+         "保护"),
+        ("被纠正之后怎么记住",
+         "被纠正时记成 correction 事件：权重 90 起、带 sting 情绪标记，比普通记录衰减得慢，"
+         "并且会参与自我模型的统计（「在哪类事上出过几次事故」那组事实就是它算出来的）",
+         "纠错"),
+        ("检索的层次与边界",
+         "检索有四层线索兜底：FTS5 全文 → LIKE → 多词 OR → 中文 2-gram；"
+         "词法覆盖率低于阈值时才启用语义层（向量）。精确提问靠词法、模糊提问靠向量，"
+         "两者是并集不是替代",
+         "检索"),
+        ("开源与防抄",
+         "这套记忆库已开源（brain-framework 仓），许可用 AGPL-3.0 而不是 MIT："
+         "MIT 允许套壳与闭源商用，AGPL 能拦住「改后闭源分发」和「做成服务收费」两种用法 —— "
+         "这就是「被人抄走拿去卖怎么办」的答案",
+         "开源"),
+        ("可移植性",
+         "换机器也认得出：核心只有 schema.sql 加几个 python 文件，库路径与模型路径都走环境变量"
+         "（BRAIN_DB / BRAIN_EMBED_MODEL）；在干净目录、空库上跑 test_brain 全过，"
+         "不依赖本机任何数据 —— 这是「怎么证明它不靠这台机器」的答案",
+         "裸机"),
+    ]
+    out = []
+    for claim_name, text, key in specs:
+        ids = evs(key)
+        out.append({
+            "claim": "%s：%s" % (claim_name, text),
+            "domain": "arch",
+            "hits": 1,
+            "evidence": ids,
+            "confidence": 82 if ids else 70,
+        })
+    return out
+
+
 def consolidate(con, apply=False):
     ev = gather(con)
     report = {"events": len(ev), "facts": [], "procedures": len(PROCS)}
@@ -549,7 +647,7 @@ def consolidate(con, apply=False):
         })
 
     report["facts"] = (report["facts"] + freq_facts(con) + pair_facts(con)
-                       + user_topic_facts(con) + self_model_facts(con))
+                       + user_topic_facts(con) + self_model_facts(con) + arch_facts(con))
 
     if apply:
         n_f = n_p = 0
@@ -559,9 +657,12 @@ def consolidate(con, apply=False):
                 con.execute("UPDATE facts SET confidence=?, evidence=?, last_checked=? WHERE id=?",
                             (f["confidence"], json.dumps(f["evidence"]), now(), row["id"]))
             else:
+                # activation 从 0.45 起：记忆痕迹形成即刻，但**先是沉默的**，
+                # 之后才变得可检索（engram maturation，arXiv 2605.08538 引 Kitamura）。
+                # 成熟靠被使用，不靠等待 —— 每次被 recall 带进前列 +0.08，上限 1.0。
                 con.execute(
-                    "INSERT INTO facts (claim,evidence,confidence,last_checked,created_at,domain)"
-                    " VALUES (?,?,?,?,?,?)",
+                    "INSERT INTO facts (claim,evidence,confidence,last_checked,created_at,domain,activation)"
+                    " VALUES (?,?,?,?,?,?,0.45)",
                     (f["claim"], json.dumps(f["evidence"]), f["confidence"], now(), now(), f["domain"]))
                 n_f += 1
         # 派生视图要「重建」，不是「只增」：旧判据产出的 pattern 事实，
