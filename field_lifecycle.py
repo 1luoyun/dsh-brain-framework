@@ -92,6 +92,22 @@ def read_count(sql, col):
     return len(re.findall(r"\b%s\b" % re.escape(col), sql))
 
 
+def check_orphan_options(src):
+    """`getattr(a, "...")` 读的选项，命令行里必须真的注册过（2026-11-05 立）。
+
+    由头：一天里连抓两个 —— `--full` 和 `--no-assoc` 都在代码里被读
+    （`if not getattr(a, "full", False)` 这种），但 `add_argument` 里从来没有它们。
+    `getattr` 带默认值 ⇒ 不报错、静默走默认分支 ⇒ **代码看着是好的，
+    这个能力实际不存在**，而且没有任何测试会变红。
+
+    判据：正则各扫一遍 `getattr(a, "name")` 和 `add_argument("--name")`，做差集。
+    """
+    used = set(re.findall(r'getattr\(a,\s*"([a-z_]+)"', src))
+    reg = {m.group(1).replace("-", "_")
+           for m in re.finditer(r'add_argument\("--([a-z0-9-]+)"', src)}
+    return sorted(used - reg)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true")
@@ -123,8 +139,16 @@ def main():
             if not written:
                 report.append({"table": table, "column": c, "reads": r})
 
+    # 选项注册检查（2026-11-05 补）
+    brain_src = ""
+    _bp = os.path.join(HERE, "brain.py")
+    if os.path.exists(_bp):
+        brain_src = open(_bp, encoding="utf-8", errors="replace").read()
+    orphan = check_orphan_options(brain_src) if brain_src else []
+
     if a.json:
-        print(json.dumps({"ok": True, "read_only": report}, ensure_ascii=False, indent=2))
+        print(json.dumps({"ok": True, "read_only": report, "orphan_options": orphan},
+                         ensure_ascii=False, indent=2))
     else:
         print("只读不写的列（粗筛，需人工判定）：")
         if not report:
@@ -133,9 +157,15 @@ def main():
             print("  %-14s %-18s 出现 %d 次，但从未出现在 INSERT/UPDATE 的写位置"
                   % (r["table"], r["column"], r["reads"]))
         print()
+        print("``getattr(a, ...)` 读了但没注册的选项：")
+        if not orphan:
+            print("  无（每个被读取的选项都能从命令行传进来）")
+        for n in orphan:
+            print("  --%s  代码里读它，add_argument 里没有 —— 这个开关实际用不了" % n)
+        print()
         print("提醒：只读不一定是错（防御性字段就该只读）；真正要查的是"
               "「注释宣称会写、实际不写」的那种。")
-    return 0
+    return 1 if orphan else 0
 
 
 if __name__ == "__main__":
