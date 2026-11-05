@@ -433,10 +433,81 @@ def check_size():
     add("库体积", True, "brain.db %.1f MB；WAL %.1f MB" % (mb, wmb))
 
 
+def selftest():
+    """自证：造几个坏样本，确认对应检查真的会红（2026-11-06 立）。
+
+    由头：17 项检查里只有 4 项（睡眠日志、引用完整性、SELF.md、分段粒度）
+    是我手动做过双向实证的，其余 13 项**从没验过会不会失败**。
+    **一条永远报 OK 的闸门等于没有闸门** —— 而它比没有更糟，因为它给人虚假的安心。
+
+    做法：在**临时副本**上注入坏数据，跑对应检查，看它是不是 add(False)。
+    不碰真库。
+    """
+    import tempfile, shutil
+    cases_failed = []
+    src = DB
+    tmp = os.path.join(tempfile.gettempdir(), "_brain_health_selftest.db")
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    try:
+        shutil.copy2(src, tmp)
+        con = sqlite3.connect(tmp)
+        con.row_factory = sqlite3.Row
+
+        # 夹具 1：links 指向不存在的事件（引用完整性该红）
+        con.execute("INSERT INTO links (a,b,rel,created_at) VALUES (999999,999998,'similar',?)",
+                    (time.strftime("%Y-%m-%d %H:%M:%S"),))
+        con.commit()
+        RESULTS.clear()
+        check_link_integrity(con)
+        cases_failed.append(("引用完整性", len(RESULTS) == 1 and not RESULTS[0]["ok"]))
+        con.execute("DELETE FROM links WHERE a=999999")
+        con.commit()
+
+        # 夹具 2：episodes 段长超限（分段粒度该红）
+        row = con.execute("SELECT id, event_count FROM episodes LIMIT 1").fetchone()
+        if row:
+            con.execute("UPDATE episodes SET event_count=99999 WHERE id=?", (row["id"],))
+            con.commit()
+            RESULTS.clear()
+            check_episode_size(con)
+            cases_failed.append(("分段粒度", len(RESULTS) == 1 and not RESULTS[0]["ok"]))
+            con.execute("UPDATE episodes SET event_count=? WHERE id=?", (row["event_count"], row["id"]))
+            con.commit()
+
+        # 夹具 3：事件表为空（check_events 该红）
+        con.execute("CREATE TEMP TABLE _bak AS SELECT * FROM events")
+        con.execute("DELETE FROM events")
+        con.commit()
+        RESULTS.clear()
+        check_events(con)
+        cases_failed.append(("事件数量", len(RESULTS) >= 1 and not RESULTS[0]["ok"]))
+        con.execute("INSERT INTO events SELECT * FROM _bak")
+        con.commit()
+
+        con.close()
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+    bad = [n for n, ok in cases_failed if not ok]
+    print("health 自证 —— %d 组夹具" % len(cases_failed))
+    for n, ok in cases_failed:
+        print("  [%s] %s" % ("OK " if ok else "XX", n))
+    print()
+    print("VERDICT: %s" % ("PASS" if not bad else "FAIL（%d 组：%s）" % (len(bad), "/".join(bad))))
+    return 0 if not bad else 1
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--selftest", action="store_true",
+                    help="造坏样本验证检查真的会红，不碰真库")
     a = ap.parse_args()
+
+    if a.selftest:
+        return selftest()
 
     if not os.path.exists(DB):
         print(json.dumps({"ok": False, "error": "brain.db 不存在"}, ensure_ascii=False))
