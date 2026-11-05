@@ -389,7 +389,7 @@ def check_migration_coverage(con):
         if os.path.exists(tmp):
             os.remove(tmp)
     # 真库已有的列（新库不需要迁移）
-    real = {r[1] for r in con.execute("PRAGMA table_info(events)")}
+    # 2026-11-06: 这里原本有个 `real = {...}` 赋值但从未使用（ruff F841），删掉。
     # 一个全新库按 schema 建出来就齐了，所以这里只核「migrate 声明的列是否都在 schema 里」
     # —— 反过来（schema 有而 migrate 漏）在全新库上体现不出来，得靠人改代码时记着。
     missing_in_schema = migrated - cols
@@ -461,7 +461,7 @@ def check_corrections(con):
 
     只判「连续 14 天一条 correction 都没有」—— 不是每天必须有，但两周都没有，
     说明写入纪律已经断了。2026-11-03 实测：全库只有 1 条 correction，
-    而最近三天落云纠正过两次 —— 不是没纠正，是没记。
+    而最近三天被纠正过两次 —— 不是没纠正，是没记。
     """
     row = con.execute(
         "SELECT max(ts) FROM events WHERE superseded=0 AND kind='correction'").fetchone()
@@ -490,6 +490,53 @@ def check_size():
     add("库体积", True, "brain.db %.1f MB；WAL %.1f MB" % (mb, wmb))
 
 
+def check_refresh_log():
+    """刷新链最近一轮有没有硬失败标记（2026-11-06 立）。
+
+    **由头是一起整整 9 次没人发现的失败**：memq 于 2026-11-04 退役，
+    `memindex.mjs` 连同它的 index 产物一起被移进 `archive\\memq-retired-20261104\\`，
+    而 `tools\\memory-refresh.bat` 第 5 步还在调 `%HUB%\\memindex.mjs`。
+    从 2026-11-05 01:34 起，每 6 小时一次 `Error: Cannot find module`，
+    连着 9 轮 —— 一次都没被看见。
+
+    原因不是没人跑，是**没人读 refresh.log**：那 9 次失败全躺在里面，
+    而 bat 对第 5 步没有 errorlevel 检查，health 也不看这个文件。
+
+    判据：切出最后一次 run（`=====` 开头的行为界）之后的片段，命中硬失败标记即红。
+    `[WARN]` **不算** —— 那是 bat 里有意的软失败（realcheck 未命中照样记 WARN）。
+    """
+    p = os.path.join(HERE, "..", "hub", "refresh.log")
+    if not os.path.exists(p):
+        # 没接定时刷新链的环境（例如刚 clone 下来）没有这个文件，跳过而不是报红，
+        # 否则这一项在别人机器上会永远失败。
+        add("刷新链日志", True, "未接刷新链（无 refresh.log），跳过")
+        return
+    try:
+        raw = open(p, "rb").read()
+    except Exception as e:
+        add("刷新链日志", False, "读不了：%s" % type(e).__name__)
+        return
+    txt = raw.decode("utf-8", "replace")
+    lines = txt.splitlines()
+    last = -1
+    for i, ln in enumerate(lines):
+        # 只认"一轮开始"的分隔行；SUMMARY 那行也以 ===== 开头，但不是一轮的起点
+        if (ln.startswith("===== run ") or ln.startswith("===== MANUAL RERUN ")) \
+                and "SUMMARY" not in ln:
+            last = i
+    if last < 0:
+        add("刷新链日志", False, "没有任何 run 分隔标记")
+        return
+    seg = "\n".join(lines[last:])
+    marks = ("[FAIL]", "Error:", "MODULE_NOT_FOUND", "forrtl:", "Traceback (most recent")
+    hit = [m for m in marks if m in seg]
+    stamp = lines[last].strip().lstrip("= ").strip()
+    if hit:
+        add("刷新链日志", False, "最近一轮（%s）有失败：%s" % (stamp, "、".join(hit)))
+        return
+    add("刷新链日志", True, "最近一轮（%s）无失败标记" % stamp)
+
+
 def selftest():
     """自证：造几个坏样本，确认对应检查真的会红（2026-11-06 立）。
 
@@ -500,7 +547,8 @@ def selftest():
     做法：在**临时副本**上注入坏数据，跑对应检查，看它是不是 add(False)。
     不碰真库。
     """
-    import tempfile, shutil
+    import shutil
+    import tempfile
     cases_failed = []
     src = DB
     tmp = os.path.join(tempfile.gettempdir(), "_brain_health_selftest.db")
@@ -587,6 +635,10 @@ def main():
     check_dir()
     check_backup()
     check_size()
+    try:
+        check_refresh_log()
+    except Exception as e:
+        add("刷新链日志", False, "检查本身出错：%s" % e)
 
     fails = [r for r in RESULTS if not r["ok"]]
     verdict = "PASS" if not fails else "FAIL"

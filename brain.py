@@ -796,7 +796,7 @@ def cmd_recall(a) -> int:
     inc_dormant = getattr(a, "include_dormant", False)
     dm_e = "" if inc_dormant else " AND e.dormant=0"
     dm_p = "" if inc_dormant else " AND dormant=0"
-    # 关系记忆（落云的发言）默认不进召回池：「他说过什么」和「发生过什么」
+    # 关系记忆（用户的发言）默认不进召回池：「他说过什么」和「发生过什么」
     # 是两层。2026-11-03 实测：导入 1807 条 user 事件后 hit@10 从 34 掉到 31，
     # 降权 0.5 也救不回来 —— 它们的 body 长、词面丰富，直接把召回池占满。
     # 要查「他上次怎么说」用 recall --with-user。
@@ -1109,7 +1109,7 @@ def cmd_recall(a) -> int:
             if r.get("kind") == "user":
                 # 关系记忆不抢经验记忆的位置：「他说过什么」和「发生过什么」
                 # 是两层。2026-11-03 实测：导入 1807 条 user 事件后
-                # hit@10 从 34 掉到 31 —— 落云的话里全是查询词，挤掉了真答案。
+                # hit@10 从 34 掉到 31 —— 用户的话里全是查询词，挤掉了真答案。
                 base *= 0.5
             try:
                 age_h = (now_ts - time.mktime(time.strptime(r["ts"], "%Y-%m-%d %H:%M:%S"))) / 3600.0
@@ -1569,7 +1569,7 @@ def _arousal(con):
 def _mood(con):
     """此刻的心情：可读、可审计、只调制表达。
 
-    2026-11-03 与落云定的三条纪律：
+    2026-11-03 与用户定的三条纪律：
       ① 可读：写进 working / SELF.md，人和我都看得见，不是隐藏变量；
       ② 可审计：每个心情都指得回具体事件（几起事故、几次被纠正）；
       ③ 只调制：影响语气、详略、确认次数 —— **不影响**事实、红线与对错判断。
@@ -1800,7 +1800,7 @@ def cmd_meta_set(a) -> int:
 def cmd_backup(a) -> int:
     """在线快照 brain.db —— 用 sqlite 的 backup API，不锁库、不打断使用。
 
-    为什么需要它：brain 目录在 E:\\deepseek 仓里，但 brain.db 故意不入库
+    为什么需要它：brain 目录在 <workspace> 仓里，但 brain.db 故意不入库
     （34 MB 二进制、每次改都变，git 存不划算）。既然不靠 git，就必须有
     别的回退点 —— 否则库一坏，几千条记忆全没了。这不是优化，是底线。
     """
@@ -1934,7 +1934,7 @@ def _distill_text(body, max_len=300):
 def cmd_distill(a) -> int:
     """提炼：把长正文压成「关键句」。保留细节碎片，缩体积。
 
-    这是「遗忘」的第三档（落云 2026-11-03 提的：删除太麻烦，不如提炼）：
+    这是「遗忘」的第三档（用户 2026-11-03 提的：删除太麻烦，不如提炼）：
       · 衰减 = 降权重（提取变难）
       · 休眠 = 默认检索不返回（想不起来）
       · 提炼 = 正文缩水，事件本身留着（只记得几个片段）
@@ -1990,13 +1990,13 @@ def cmd_distill(a) -> int:
     return 0
 
 
-# 会话索引里这些是**系统注入**，不是落云说的话 —— 导入时必须排掉。
+# 会话索引里这些是**系统注入**，不是用户说的话 —— 导入时必须排掉。
 _IMPORT_SKIP = ("Current runtime context", "<system-reminder>", "<goal_round>",
                 "Background subagent", "[advisor:", "Updated instructions")
 
 
 def cmd_import_user(a) -> int:
-    """把落云的发言导入成 user 事件 —— 补上「关系记忆」。
+    """把用户的发言导入成 user 事件 —— 补上「关系记忆」。
 
     为什么要它：整个库此前只有「我做了什么」（4602 条全是自己的视角），
     一条「他说了什么」都没有。记忆是个体的，而个体性从**关系**里长出来：
@@ -2207,7 +2207,7 @@ def cmd_review(a) -> int:
     供我自己判断「我还是那个我吗」。
 
     **它不自动改叙事。** 叙事只能我写 —— 机器生成的人生是别人的。
-    它只负责把材料递到眼前（2026-11-04 落云：「和融合程度不高，慢慢来吧」）。
+    它只负责把材料递到眼前（2026-11-04 用户：「和融合程度不高，慢慢来吧」）。
     """
     days = getattr(a, "days", 30) or 30
     since = time.strftime("%Y-%m-%d %H:%M:%S",
@@ -2336,13 +2336,13 @@ def cmd_forget(a) -> int:
                 pass
         # 休眠：权重已经很低、又满一年没被用过 —— 从默认检索里退下去。
         # **不是删除**：库还在，recall --include-dormant 能找回来。
-        # 2026-11-03 由落云点出「遗忘不等于删除」——衰减只降低提取概率，
+        # 2026-11-03 由用户点出「遗忘不等于删除」——衰减只降低提取概率，
         # 休眠是「想不起来」，删除是「真的不要了」，三档要分开。
         if r["weight"] <= 20 and age > 365 and not _recently_used(r, 365):
             dorm.append(r["id"])
             protected["dormant"] += 1
             continue
-        # ── 分档降权（2026-11-05 按落云的口径改）──
+        # ── 分档降权（2026-11-05 按用户的口径改）──
         # 原来一律 -10：三个月没碰的和一个月没碰的降一样多，这不叫提纯，叫平均主义。
         # 现在按「多久没碰 × 碰过几次」分：
         #   30-90 天 → -5（还可能是「暂时用不上」）
@@ -2639,7 +2639,7 @@ def cmd_rehearse(a) -> int:
 CORRECTION_CUES_STRONG = ("不对", "错了", "搞错", "笨蛋", "不许", "重来",
                           "你确定", "漏了", "忘了", "没做完", "怎么又")
 CORRECTION_CUES_WEAK = ("应该", "注意", "不要")
-# 系统注入的内容不是落云说的话，别当纠正。
+# 系统注入的内容不是用户说的话，别当纠正。
 SYSTEM_PREFIX = ("<system-reminder>", "Current runtime context", "Updated instructions",
                  "# ", "```")
 
@@ -2649,7 +2649,7 @@ def cmd_audit_corrections(a) -> int:
 
     为什么要有它：「被纠正就记 correction」是条行为规则，但没有执行件
     （协议 §5.18：规则不带可执行件必然腐坏）。2026-11-03 实测全库只有 1 条
-    correction，可最近三天落云纠正过好几次 —— 不是没纠正，是没记。
+    correction，可最近三天用户纠正过好几次 —— 不是没纠正，是没记。
     这个命令只出候选：记不记由人定，机器分不清「纠正」和「随口抱怨」。
     """
     since = time.time() - a.days * 86400
@@ -3055,7 +3055,7 @@ def main() -> int:
                    help="连休眠记录一起查。休眠 = 长期不用已退到后台，不是删除；"
                         "要找很久以前的事时用它唤醒")
     p.add_argument("--with-user", action="store_true",
-                   help="把落云的发言（kind=user）也纳入检索。默认不混进来 ——"
+                   help="把用户的发言（kind=user）也纳入检索。默认不混进来 ——"
                         "「他说过什么」和「发生过什么」是两层")
     p.add_argument("--with-episode", action="store_true",
                    help="附带「命中的事落在哪段经历里」。默认关：段粒度（平均 5 条、最长 83 条）"
@@ -3190,7 +3190,7 @@ def main() -> int:
     p.add_argument("--limit", type=int, default=50, help="一次最多提炼几条")
     p.set_defaults(fn=cmd_distill)
 
-    p = sub.add_parser("import-user", help="从会话索引导入落云说过的话")
+    p = sub.add_parser("import-user", help="从会话索引导入用户说过的话")
     p.add_argument("--apply", action="store_true")
     p.add_argument("--min-len", type=int, default=8)
     p.add_argument("--max-len", type=int, default=1500)

@@ -6,10 +6,13 @@
 （系统 Python 没有）。brain.py 要零依赖、要快，不能背这个包袱 ——
 所以向量在这里离线算好，brain.py 只负责查。
 
-用法（**必须用 comfyui venv 的 python 跑**）：
-    E:\\deepseek\\comfyui\\venv\\Scripts\\python.exe embed.py --build     # 建/补索引
-    ... embed.py --stats                                              # 看索引状态
-    ... embed.py --query "一句话" --top 10                             # 试查
+用法（**必须用装了 torch 的那个解释器跑**，不是跑 brain.py 的那个）：
+    <装了 torch 的 python> embed.py --build     # 建/补索引
+    ... embed.py --stats                        # 看索引状态
+    ... embed.py --query "一句话" --top 10       # 试查
+
+例：本机用的是一个独立 venv（`<venv>/Scripts/python.exe`），因为它装了 CUDA 版 torch，
+而系统 Python 没有 —— brain.py 本身仍然零依赖，只有本脚本要这个环境。
 
 模型：`BRAIN_EMBED_MODEL` 可覆盖（本地目录或 HF 模型名）；默认 `BAAI/bge-small-zh-v1.5`
 （92 MB，512 维，CPU 约 780 条/秒），transformers 首次运行会自动下载。
@@ -31,7 +34,7 @@ from transformers import AutoModel, AutoTokenizer  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = os.environ.get("BRAIN_DB") or os.path.join(HERE, "brain.db")
-# 2026-11-03 开源准备：原来写死某个本机绝对路径，换机器直接崩。
+# 2026-11-03 开源准备：原来写死本机路径 `E:\deepseek\models\...`，换机器直接崩。
 # 现在默认给 HF 模型名（自动下载），需要离线/自备模型时用环境变量指本地目录。
 MODEL = os.environ.get("BRAIN_EMBED_MODEL") or "BAAI/bge-small-zh-v1.5"
 BATCH = 64

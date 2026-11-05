@@ -249,7 +249,7 @@ PROCS = [
     ),
     dict(
         name="删东西前的三步预检",
-        when_to_use="要递归删除 / 移动东西时（~/.dsh 是绝对禁区，见硬禁令；确需处理先问落云）",
+        when_to_use="要递归删除 / 移动东西时（~/.dsh 是绝对禁区，见硬禁令；确需处理先问用户）",
         steps=(
             "1) 路径断言：guard.py assert-path <路径> --expect <标记>\n"
             "2) 引用检查：删除前引用检查.py <路径>（有引用即 exit 1；注意它对协议文本里的路径会假阳性）\n"
@@ -469,7 +469,7 @@ def pair_facts(con, min_support=2, max_df_rate=0.25):
 
 
 def user_topic_facts(con, min_support=10, top=8):
-    """落云关心什么：从 user 事件指纹里找高频主题。
+    """用户关心什么：从 user 事件指纹里找高频主题。
 
     「关系记忆」不能只有「他说过什么」这一层原始记录，还得有一层抽象：
     1807 条发言里反复出现的方向。brief 回答「该注意什么」时用得上。
@@ -502,11 +502,11 @@ def user_topic_facts(con, min_support=10, top=8):
     out = []
     for t, n in cnt.most_common(top):
         # 门槛提到 30：低于这个数只能说「提过」，谈不上「关心」。
-        # 2026-11-03 实测：门槛 10 会提炼出「落云反复提到「出来」」这种。
+        # 2026-11-03 实测：门槛 10 会提炼出「用户反复提到「出来」」这种。
         if n < max(min_support, 30):
             continue
         out.append({
-            "claim": "落云反复提到「%s」—— 这是他关心的方向之一" % t,
+            "claim": "用户反复提到「%s」—— 这是他关心的方向之一" % t,
             "domain": "relation",
             "hits": n,
             "evidence": ids[t],
@@ -672,7 +672,7 @@ def consolidate(con, apply=False):
         # 产出，就该消失 —— 否则库里会永远躺着过期的废话
         # （2026-11-03 实测：旧判据留下的 23 条「高频领域」事实全是噪音）。
         # relation 域同理：过滤规则收紧后，旧的关系事实也必须一起清掉，
-        # 否则「落云反复提到「session-5e8a…」」这种会永远留在库里。
+        # 否则「用户反复提到「session-5e8a…」」这种会永远留在库里。
         n_del = 0
         for dom in ("pattern", "relation", "self"):
             keep = {f["claim"] for f in report["facts"] if f["domain"] == dom}

@@ -16,7 +16,7 @@ brain.py 要保持零依赖、要快，所以边在这里离线建好，它只�
 规则：每条事件取最近的 K 条（sim >= MIN_SIM），双向各写一条。
 增量：只处理「还没有任何 similar 边」的事件，所以常规运行很快。
 用法（**必须用 comfyui venv 的 python 跑**，它才有 numpy）：
-    E:\\deepseek\\comfyui\\venv\\Scripts\\python.exe assoc.py --build
+    <torch-venv>/Scripts/python.exe assoc.py --build
     ... assoc.py --stats
     ... assoc.py --rebuild      # 全量重算（边规则改了才用）
 """
