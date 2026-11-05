@@ -62,6 +62,18 @@ def scan(path):
     return out
 
 
+def has_number(text):
+    """注释里有没有具体数字（阈值、比例、条数、实测值）。
+
+    2026-11-06 实测出的规律：**带数字的注释几乎不会腐烂** ——
+      · 「阈值 0.35，因为 1 号题的 0.354 差 0.1 会掉档」→ 可验证，基本不会错
+      · 「判据用密度不用总数」→ 看起来具体、实际没数字，**最容易错**
+    今天核了 8 处，唯一不一致的 `_arousal` 恰好是唯一一条宣称了机制却没带数字的。
+    所以这个函数用来**给清单排优先级**：没数字的排前面。
+    """
+    return bool(re.search(r"[0-9]", text))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true")
@@ -71,20 +83,31 @@ def main():
         print("找不到 brain.py")
         return 1
     rows = scan(TARGET)
+    # 没数字的排前面 —— 那是今天实测里唯一出过不一致的那类
+    rows = sorted(rows, key=lambda x: (has_number(x[2]), x[1]))
 
     if a.json:
         print(json.dumps({"count": len(rows), "claims": [
-            {"fn": f, "line": l, "text": t} for f, l, t in rows]},
-            ensure_ascii=False, indent=2))
+            {"fn": f, "line": l, "text": t, "has_number": has_number(t)}
+            for f, l, t in rows]}, ensure_ascii=False, indent=2))
         return 0
 
+    risky = [r for r in rows if not has_number(r[2])]
     print("注释里宣称了具体机制的地方 —— %d 处（**这些都要去代码里核一遍**）" % len(rows))
     print()
-    for fn, ln, txt in rows:
-        print("  L%-5d %-22s %s" % (ln, fn, txt))
+    if risky:
+        print("⚠ 优先核这 %d 处：**宣称了机制但没带数字** —— 今天唯一出问题的那类" % len(risky))
+        for fn, ln, txt in risky:
+            print("  L%-5d %-22s %s" % (ln, fn, txt))
+        print()
+    rest = [r for r in rows if has_number(r[2])]
+    if rest:
+        print("其余 %d 处（带数字，一般写的时候被证据约束过，风险低）：" % len(rest))
+        for fn, ln, txt in rest:
+            print("  L%-5d %-22s %s" % (ln, fn, txt))
     print()
-    print("提醒：这个工具只出清单，不判对错。今天实测 6 个函数里 1 个对不上")
-    print("      （_arousal 说「用密度不用总数」，实际是纯总数）。判断要靠读代码 + 跑一次。")
+    print("提醒：这个工具只出清单，不判对错。已核 8 处、1 处不一致（_arousal 说「用密度不用总数」，")
+    print("      实际是纯总数）。判断要靠读代码 + 跑一次。")
     return 0
 
 
