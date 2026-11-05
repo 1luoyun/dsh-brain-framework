@@ -136,6 +136,33 @@ def fingerprint(title: str, kind: str) -> str:
 
 
 # ── 评分 ────────────────────────────────────────────────────
+def _pick_by_sem(items, sims, text_key, min_sim=0.50, top_gap=0.10, hit_fn=None):
+    """按语义分挑相关项；给了 `hit_fn` 就并上词面命中的。
+
+    2026-11-05 立。原来 brief 里 constraints / procedures / facts 三层是**三套写法**
+    —— 两层走语义、一层只走词面（问「改 memory-refresh.bat 的步骤」时 constraints
+    返回空，而库里那条「改配置先备份再校验」就在那儿）。同一份输出里判据不一致，
+    那个只能词面的层就是注定的漏点。抽成一个函数，三处共用。
+
+    判据：语义分 >= min_sim **且** 不低于最高分 top_gap（砍掉「只是都很像」的陪跑）；
+    有 hit_fn 时再把词面命中的并进来 —— **宁可多给两条，别漏一条**（尤其禁令）。
+    """
+    out, seen = [], set()
+    if sims:
+        ranked = sorted(zip(items, sims), key=lambda x: -x[1])
+        top = ranked[0][1] if ranked else 0.0
+        for it, s in ranked:
+            if s >= min_sim and s >= top - top_gap:
+                out.append(it)
+                seen.add(it["id"])
+    if hit_fn:
+        for it in items:
+            if it["id"] not in seen and hit_fn(it.get(text_key) or ""):
+                out.append(it)
+                seen.add(it["id"])
+    return out
+
+
 def score(row) -> float:
     """一条事件的检索分。
 
@@ -2672,29 +2699,19 @@ def cmd_brief(a) -> int:
     else:
         psims = fsims = usims = csims = None
 
-    # ── 禁令 ──
-    # 2026-11-05：改成「词面 or 语义」。原来只有词面 any_hit，问
-    # 「改 memory-refresh.bat 的步骤」时 constraints 返回空，而库里明明有
-    # 「改配置/组合：先备份 → 改后解析校验 → 是否需重启」—— 只是查询里没有「配置」二字。
-    if csims:
-        ranked_c = sorted(zip(cons, csims), key=lambda x: -x[1])
-        top_c = ranked_c[0][1] if ranked_c else 0.0
-        rel_cons = [c for c, s in ranked_c if s >= 0.50 and s >= top_c - 0.10]
-        _w = [c for c in cons if any_hit(c["what"], 2.0)]
-        _seen = {c["id"] for c in rel_cons}
-        rel_cons += [c for c in _w if c["id"] not in _seen]
-    else:
-        rel_cons = [c for c in cons if any_hit(c["what"], 2.0)]
+    # ── 禁令 ──（走统一判据：语义 or 词面，见 _pick_by_sem）
+    rel_cons = _pick_by_sem(cons, csims, "what", min_sim=0.50, top_gap=0.10,
+                            hit_fn=lambda t: any_hit(t, 2.0))
     rel_cons.sort(key=lambda c: (-(c["violated"] or 0), c["id"]))
 
     # ── 步骤 ──
     # 词面在这里必败：「删一个目录」与「删东西前的三步预检」只共享一个「删」字。
-    if psims:
-        ranked = sorted(zip(procs, psims), key=lambda x: -x[1])
-        top = ranked[0][1] if ranked else 0.0
-        # 绝对线 0.55 说明「语义上像」；相对线 top-0.08 砍掉「只是都提到插件」的陪跑
-        rel_procs = [p for p, s in ranked if s >= 0.55 and s >= top - 0.08]
-    else:
+    # 阈值比别的层高一点（0.55 / 0.08）：步骤的作用是「照着做」，给错了会误导操作。
+    rel_procs = _pick_by_sem(
+        procs, psims, "name", min_sim=0.55, top_gap=0.08,
+        hit_fn=lambda t: any_hit(t, 2.0))
+    if procs and not psims:
+        # 没语义时 hit_fn 只看 name，补上 when_to_use
         rel_procs = [p for p in procs
                      if any_hit(p["name"] + " " + (p["when_to_use"] or ""))]
     rel_procs.sort(key=lambda p: -((p["fail_count"] or 0) - (p["success_count"] or 0)))
