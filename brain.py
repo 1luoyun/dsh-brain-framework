@@ -395,6 +395,29 @@ def _idf(n_docs: int, df: int) -> float:
     return math.log(1.0 + (n_docs + 1.0) / (df + 1.0))
 
 
+def _kind_intent(q: str):
+    """查询里点名的**事件类型** → kind；没点名返回 None。
+
+    2026-11-05 立。这是「加一个筛选维度」这条路线的第四个（前三个：时间窗、
+    程度门限、记忆成熟期）。由头：问「我学过哪些教训」「我做过哪些决定」，
+    **返回完全空** —— 因为「教训」「决定」这两个词在库里的标题正文里几乎不出现
+    （它们是 kind 字段的值，不是文字）。问「我改配置出过什么事故」返回的五条里
+    也只有一条是 accident。
+
+    跟否定词/停用词那三次失败的区别：这是**加维度**，不是减东西 ——
+    补一批该类型的事件进召回池，最坏情况只是多几条候选，不会丢答案。
+    """
+    if any(w in q for w in ("事故", "踩过什么坑", "出过什么错", "翻过什么车")):
+        return "accident"
+    if any(w in q for w in ("教训", "学到", "反思")):
+        return "learn"
+    if any(w in q for w in ("决定", "取舍", "选了")):
+        return "decision"
+    if any(w in q for w in ("被纠正", "纠正过", "被骂")):
+        return "correction"
+    return None
+
+
 def _degree_intent(q: str):
     """查询里有没有「最严重/最重要」这类**程度词**；有就返回门限，否则 None。
 
@@ -935,6 +958,7 @@ def cmd_recall(a) -> int:
     # 这一步是"补召回"，不是"改排序"：池子有了，后面的 score 才有得排。
     _tw = _time_window(q)
     _dg = _degree_intent(q)
+    _kd = _kind_intent(q)
     if _tw is not None:
         _cutoff = time.strftime("%Y-%m-%d %H:%M:%S",
                                 time.localtime(time.time() - _tw * 86400))
@@ -970,6 +994,24 @@ def cmd_recall(a) -> int:
                 _added2 += 1
         if _added2:
             attempts.append({"cue": "degree", "threshold": _dg, "added": _added2})
+    # 类型意图补池（2026-11-05）：问「我学过哪些教训」原本**返回完全空** ——
+    # 「教训」是 kind 字段的值，不是库里的文字，词面撞不到任何东西。
+    # 补一批该 kind 最近的事件进池，让后面的排序有东西可排。
+    if _kd is not None:
+        _have = {r["id"] for r in rows}
+        _kt = [dict(x) for x in con.execute(
+            "SELECT e.id,e.ts,e.kind,e.title,e.weight,e.emotion,e.salience,e.hits,e.session"
+            " FROM events e WHERE e.superseded=0 AND e.kind = ?"
+            " ORDER BY e.weight DESC, e.ts DESC LIMIT ?",
+            (_kd, max(10, a.limit * 2)))]
+        _added3 = 0
+        for x in _kt:
+            if x["id"] not in _have:
+                rows.append(x)
+                _have.add(x["id"])
+                _added3 += 1
+        if _added3:
+            attempts.append({"cue": "kind", "kind": _kd, "added": _added3})
 
     if rows:
         # 启动效应（priming）：最近 24 小时内发生的事更容易被想起
@@ -1044,6 +1086,14 @@ def cmd_recall(a) -> int:
                 if float(r.get("weight") or 50) >= _dg:
                     r["score"] = round(r["score"] * 2.5, 1)
                     r["degreefit"] = True
+        # 类型意图（2026-11-05）：用户点名了「事故/教训/决定」，该 kind 的排前面。
+        # 问「我学过哪些教训」，池子里本来一条 learn 都没有，补进来之后还得让它们
+        # 不被词面更匹配的其他类型压下去。
+        if _kd is not None:
+            for r in rows:
+                if r.get("kind") == _kd:
+                    r["score"] = round(r["score"] * 2.0, 1)
+                    r["kindfit"] = True
         # 精确标题命中优先：用户把某条标题原样打出来，多半就是在找那条。
         # 2026-11-03 合成评测实测：拿标题当查询，30 条里 **0 条排第一** ——
         # 全被「词面相近但更新、更重」的记录压过去。这不是排序调参问题，
@@ -1086,6 +1136,8 @@ def cmd_recall(a) -> int:
             -(_ts_of(r.get("ts")) or 0.0) if r.get("timefit") else 0.0,
             # 程度意图同理：问「最严重的」，高权重的先上（2026-11-05）
             0 if r.get("degreefit") else 1,
+            # 类型意图：点名了 kind，该 kind 的单独一档（2026-11-05）
+            0 if r.get("kindfit") else 1,
             # 标题覆盖过半的单独一档：用户原样问一条标题时，答案就是那条
             # 原始记录，而不是正文里整段引用它的新事件（4 号题实测）。
             # 阈值取 0.35 不是 0.5：1 号题的答案 #4535 标题含 openAt/改成/
@@ -1227,8 +1279,13 @@ def cmd_recall(a) -> int:
     # facts 要够格：至少被 2 个不同线索命中。单个 gram 撞上一条事实不算答案 ——
     # 中文 2-gram 的 OR 几乎必中，原来那句 `or facts` 会把库里没有的虚构问题判成 found。
     strong_facts = any(v["n"] >= 2 for v in fact_cues.values())
+    # 类型意图命中（2026-11-05）：用户点名了「教训/决定/事故」，且补池确实带进了
+    # 该 kind 的事件 —— 这本身就是答案，不能因为词面覆盖率低被判成「线索不对」。
+    # 不加这条的话，问「我学过哪些教训」会进下面那个 `rows = []` 分支，
+    # 补池白补（实测：cue 里明明有 kind，输出却是 0 条）。
+    kind_hit = _kd is not None and any(r.get("kind") == _kd for r in rows)
     if ((top_cov >= 0.55 and top_nhit >= 2) or vec_top >= 0.60 or any_strong
-            or strong_facts or procs):
+            or strong_facts or procs or kind_hit):
         verdict = "found"
         note = ""
     elif total:
