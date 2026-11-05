@@ -1315,7 +1315,11 @@ def cmd_recall(a) -> int:
     # `open_items` 表里。这跟 constraints 层当初一模一样的病：某些层只给 brief 看，
     # recall 压根不查。用户不知道答案在哪一层。
     _opens = []
-    if any(w in q for w in ("没做", "还没", "待办", "未结", "未完成", "下一步", "要做")):
+    # 触发词实测覆盖（2026-11-05）：「还有哪些没做」「待办事项」「下一步该干什么」
+    # 「哪些事还没弄完」都命中；「有什么没完成的」「遗留问题」「欠的债」原来漏了，
+    # 补进来。「没完成」跟「未完成」是两个词，中文里这类近义换字太多了。
+    if any(w in q for w in ("没做", "还没", "待办", "未结", "未完成", "没完成",
+                            "下一步", "要做", "遗留问题", "欠的债", "欠债")):
         _opens = [dict(r) for r in con.execute(
             "SELECT id, what, created_at, due FROM open_items WHERE status='open'"
             " ORDER BY id DESC LIMIT ?", (a.limit,))]
