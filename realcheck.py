@@ -192,6 +192,27 @@ INTENT_CASES = [
     ("哪里翻过车", None, None, "accident"),      # 同上（原来只有「翻过什么车」）
     ("我改配置出过什么事故", None, None, "accident"),
     ("我哪里被纠正过", None, None, "correction"),
+    # ── 2026-11-05 晚：把「拿多种说法实测」的产物固化进来 ──
+    # 时间/程度是**封闭集合**（列得全就够），类型是**开放语义**（永远补不完）。
+    # 这层夹具只能锁住「已经遇到过的说法」，但它至少让已知的不会退化。
+    ("今日进展", 1.0, None, None),
+    ("刚才改了什么", 1.0, None, None),
+    ("昨天出的事", 2.0, None, None),
+    ("最近干了啥", 3.0, None, None),
+    ("这几天怎么样", 3.0, None, None),
+    ("这两天发生什么", 3.0, None, None),
+    ("最近提交", None, None, None),              # 「最近」修饰名词，不问时间
+    ("最重的事故", None, 90.0, "accident"),
+    ("最大的问题", None, 90.0, None),
+    ("最惨那次", None, 90.0, None),
+    ("最糟的情况", None, 90.0, None),
+    ("最多三行", None, None, None),              # 「最多」不是程度
+    ("踩过什么坑", None, None, "accident"),
+    ("出过什么错", None, None, "accident"),
+    ("反思一下", None, None, "learn"),
+    ("选了哪个方案", None, None, "decision"),
+    ("纠正过什么", None, None, "correction"),
+    ("被骂过吗", None, None, "correction"),
 ]
 
 
