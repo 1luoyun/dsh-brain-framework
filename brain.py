@@ -1293,6 +1293,23 @@ def cmd_recall(a) -> int:
     procs, proc_cues = procs_by(terms)
     cons = cons_by(terms)
 
+    # 2026-11-05 补：constraints 也要走语义。之前整层只有词面 ——
+    # 问「改 memory-refresh.bat 的步骤」时，库里那条「改配置/组合：先备份 →
+    # 改后解析校验 → 是否需重启」压根召不到，因为查询里没有「配置」二字。
+    # **禁令是最不能漏的一层**（漏一条的代价不是少一条结果，是可能违规）。
+    # 只有 14 条，一次语义调用约 0.1 秒；词面命中的用并集保留，宁多勿少。
+    _all_cons = [dict(r) for r in con.execute(
+        "SELECT id,what,severity,violated FROM constraints WHERE active=1")]
+    if _all_cons:
+        _cs = _sem_sims(q, [c["what"] for c in _all_cons])
+        if _cs and len(_cs) == len(_all_cons):
+            _top_c = max(_cs)
+            _sem_cons = [c for c, s in sorted(zip(_all_cons, _cs), key=lambda x: -x[1])
+                         if s >= 0.50 and s >= _top_c - 0.10]
+            _seen_c = {c["id"] for c in _sem_cons}
+            cons = _sem_cons + [c for c in cons if c["id"] not in _seen_c]
+            cons = cons[:a.limit]
+
     # 记忆成熟期（2026-11-05）：只有被 recall 真正带出来的事实才算「被使用过」，
     # 每次 +0.08、上限 1.0 —— 成熟靠被使用，不靠等待。
     # 只给前 3 条加，理由与 events.hits 相同：一次返回十几条，真会被看的就前几条。
