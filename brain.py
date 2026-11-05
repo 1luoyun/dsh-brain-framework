@@ -2554,6 +2554,15 @@ def cmd_brief(a) -> int:
         advice = ("有 %d 条事件沾边，但没有一条够得上「同类事故/步骤/教训」——"
                   " 先按常规流程走。" % n_ev)
 
+    # 2026-11-05：标出「这套步骤从没被用过」。由头很具体 —— procedures 九条的
+    # success_count / fail_count **全是 0**，`proc-use` 从上线起没人调用过，
+    # 于是「记成败、定位薄弱步骤」这一层完全是死的（今天第三个同类问题：
+    # 前面还有 embed 不在刷新链里、similar 边没有生成器、salience 从没被写过）。
+    # brief 是唯一会把这些步骤摆到眼前的地方，就在这里显示使用次数 ——
+    # 看到 used=0 就该想到「做完记一笔」。
+    for p in rel_procs:
+        p["used"] = (p.get("success_count") or 0) + (p.get("fail_count") or 0)
+
     emit({"ok": True, "about": q, "risk": risk, "advice": advice,
           "cues": cues[:10], "matched_events": n_ev,
           "constraints": rel_cons[:8], "procedures": rel_procs[:5],
