@@ -100,11 +100,22 @@ def check_orphan_options(src):
     `getattr` 带默认值 ⇒ 不报错、静默走默认分支 ⇒ **代码看着是好的，
     这个能力实际不存在**，而且没有任何测试会变红。
 
-    判据：正则各扫一遍 `getattr(a, "name")` 和 `add_argument("--name")`，做差集。
+    判据：正则各扫一遍 `getattr(a, "name")` 和 `add_argument(...)`，做差集。
+
+    **2026-11-06 修**：只扫 `add_argument("--name")` 会**误报**用 `dest=` 改过名字的选项。
+    实例：`p.add_argument("--all", dest="show_all", ...)` 只认 `--all`，
+    而代码里读的是 `getattr(a, "show_all")` —— 差集里就多出一个不存在的 orphan。
+    **参数本身是好的，是检查写窄了。** 所以现在三种写法都算注册：
+    `--name`（横线转下划线）、`dest="name"`、以及 `add_argument("name")`（位置参数）。
     """
     used = set(re.findall(r'getattr\(a,\s*"([a-z_]+)"', src))
     reg = {m.group(1).replace("-", "_")
-           for m in re.finditer(r'add_argument\("--([a-z0-9-]+)"', src)}
+           for m in re.finditer(r'add_argument\(\s*"--([a-z0-9-]+)"', src)}
+    # dest 显式改名
+    reg |= set(re.findall(r'dest\s*=\s*"([a-z_]+)"', src))
+    # 位置参数（没有 -- 前缀）
+    reg |= {m.group(1).replace("-", "_")
+            for m in re.finditer(r'add_argument\(\s*"([a-zA-Z0-9_-]+)"', src)}
     return sorted(used - reg)
 
 
