@@ -341,6 +341,32 @@ def cmd_constrain(a) -> int:
     return 0
 
 
+def cmd_unconstrain(a) -> int:
+    """停用/恢复一条约束（2026-11-06 补）。
+
+    补这个是因为查空字段时发现：`constraints.active` 有 **7 处 `WHERE active=1` 在读它，
+    但全库没有一行代码把它置 0** —— 也就是说「禁用一条约束」这个功能**根本不存在**。
+    它不是死字段（读它在用），是**等不到输入**。这类空字段该通电，不是该拔插头。
+
+    **只改 active 不删行**：禁用的约束仍然留在表里，`constraints` 命令（不带 --active-only）
+    能看到它、能再启用回来。删掉就丢了「这条曾经立过」的信息。
+    """
+    con = connect(); ensure_schema(con)
+    row = con.execute("SELECT id,what,active FROM constraints WHERE id=?", (a.id,)).fetchone()
+    if not row:
+        con.close()
+        emit({"ok": False, "error": "没有这条约束。id 要用 constraints 命令查出来的真 id。"})
+        return 1
+    want = 0 if a.disable else 1
+    con.execute("UPDATE constraints SET active=? WHERE id=?", (want, a.id))
+    con.commit()
+    con.close()
+    emit({"ok": True, "id": a.id, "active": want,
+          "what": (row["what"] or "")[:60],
+          "note": "已停用（不再进 brief/recall）" if want == 0 else "已恢复"})
+    return 0
+
+
 def cmd_violate(a) -> int:
     """违反一条禁令：计数 +1、记时间，同时写一条事故事件。"""
     con = connect(); ensure_schema(con)
@@ -362,17 +388,23 @@ def cmd_violate(a) -> int:
 
 def cmd_constraints(a) -> int:
     con = connect(); ensure_schema(con)
-    where = "active=1"
+    # 2026-11-06：加 --all。补 unconstrain 时发现「停用的约束看不到」——
+    # 我给 unconstrain 写的注释说「能看到它、能再启用回来」，但 commands 只列 active=1，
+    # **那句话当时是错的**。没有 --all 就真看不到，也就无法恢复。
+    where = "1=1" if getattr(a, "show_all", False) else "active=1"
     params = []
     if a.severity:
         where += " AND severity=?"
         params.append(a.severity)
     rows = [dict(r) for r in con.execute(
-        "SELECT id,what,why,severity,scope,violated,last_violated FROM constraints"
-        " WHERE %s ORDER BY CASE severity WHEN 'hard' THEN 0 ELSE 1 END, violated DESC, id" % where,
+        "SELECT id,what,why,severity,scope,violated,last_violated,active FROM constraints"
+        " WHERE %s ORDER BY active DESC, CASE severity WHEN 'hard' THEN 0 ELSE 1 END,"
+        " violated DESC, id" % where,
         params)]
     con.close()
-    emit({"ok": True, "count": len(rows), "constraints": rows})
+    emit({"ok": True, "count": len(rows),
+          "active": sum(1 for r in rows if r.get("active")),
+          "constraints": rows})
     return 0
 
 
@@ -3031,7 +3063,16 @@ def main() -> int:
     p = sub.add_parser("violate"); p.add_argument("id", type=int)
     p.add_argument("--note"); p.set_defaults(fn=cmd_violate)
 
+    # 2026-11-06 补：停用/恢复一条约束。原来 `constraints.active` 有 7 处读、零处写 ——
+    # 「禁用一条约束」这个功能根本不存在（查空字段时发现的）。
+    p = sub.add_parser("unconstrain"); p.add_argument("id", type=int)
+    p.add_argument("--disable", action="store_true",
+                   help="停用这条约束（默认是恢复）。禁用的行仍在表里，可再启用")
+    p.set_defaults(fn=cmd_unconstrain)
+
     p = sub.add_parser("constraints"); p.add_argument("--severity")
+    p.add_argument("--all", dest="show_all", action="store_true",
+                   help="连已停用的也列出来（默认只看 active=1）")
     p.set_defaults(fn=cmd_constraints)
 
     p = sub.add_parser("open"); p.add_argument("--what", required=True)
