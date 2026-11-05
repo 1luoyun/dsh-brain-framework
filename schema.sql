@@ -192,3 +192,13 @@ CREATE TABLE IF NOT EXISTS constraints (
   created_at    TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_constraints_sev ON constraints(severity, active);
+
+-- 提炼留痕（2026-11-05 补）：每压一条记一行，事后能查
+CREATE TABLE IF NOT EXISTS distill_log (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts        TEXT    NOT NULL,
+  event_id  INTEGER NOT NULL,
+  old_chars INTEGER,
+  new_chars INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_distill_ev ON distill_log(event_id);

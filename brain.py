@@ -137,6 +137,14 @@ def fingerprint(title: str, kind: str) -> str:
 
 # ── 评分 ────────────────────────────────────────────────────
 def score(row) -> float:
+    """一条事件的检索分。
+
+    2026-11-05 试改两轮，结论：**时间衰减不能砍，使用加成可以加强**。
+      第一轮把半衰系数 7→14 天（想让旧事件别被当没发生过）：hit@1 +1，但 hit@10 -3，
+      老题 #21/#30 直接掉出去 —— 旧的全都浮上来，把正确答案挤走了。
+      所以 s 恢复原样；只把「使用加成」上限从 0.5 提到 1.0：
+      抗衰减的来源应该是「被真的用过」，不是「所有东西都别老」。
+    """
     w = float(row["weight"] or 50)
     try:
         ts = time.mktime(time.strptime(row["ts"], "%Y-%m-%d %H:%M:%S"))
@@ -147,7 +155,7 @@ def score(row) -> float:
     retention = math.exp(-age / s)
     sal = float(row["salience"]) if row["salience"] is not None else 1.0
     sting = 1.25 if row["emotion"] == "sting" else 1.0
-    used = 1.0 + min(0.5, (row["hits"] or 0) * 0.05)   # 常被取用 = 更牢
+    used = 1.0 + min(1.0, (row["hits"] or 0) * 0.10)   # 常被取用 = 抗衰减的真正来源
     return w * retention * sal * sting * used
 
 
@@ -158,7 +166,7 @@ def _current_session(con=None):
     ① meta['current_session'] —— 由装配器（self.mjs）写进来。它知道确切的容器 id；
        Python 侧拿不到（实测环境变量里没有 DSH_SESSION_ID）。
     ② 回落到「~/.dsh/sessions/<workspace>/ 下最近被写过的目录」—— 会猜错
-       （实测猜成了 session-0d65ef90，而实际是 session-f126ad6），
+       （实测猜成了 session-A，而实际是 session-B），
        所以只在 ① 没有时才用，且它只用于挂来源，不影响评分与排序。
     """
     own = con is None
@@ -986,7 +994,7 @@ def cmd_recall(a) -> int:
     any_strong = any(
         r.get("strong") and (r.get("coverage") or 0.0) >= 0.15 for r in rows)
     total = len(rows) + len(facts) + len(procs)
-    if ((top_cov >= 0.55 and top_nhit >= 2) or vec_top >= 0.55 or any_strong
+    if ((top_cov >= 0.55 and top_nhit >= 2) or vec_top >= 0.60 or any_strong
             or facts or procs):
         verdict = "found"
         note = ""
@@ -1006,10 +1014,37 @@ def cmd_recall(a) -> int:
             note = ("换了 %d 种线索都没命中，但库里有 %d 条事件 —— "
                     "这更像「线索不对」而不是「这事没发生过」。换个说法或关键词再试。" %
                     (len(attempts), lib))
+    # 联想：命中的前几条，顺着 similar 边走一跳把邻居带出来。
+    # 这是「想到一半想起了别的」——语义近邻，不是同一个问题的答案。
+    # 所以**不参与排序**，单独一列给出去；要不要看由人判断。
+    assoc = []
+    if verdict == "found" and rows and not getattr(a, "no_assoc", False):
+        ids = [r["id"] for r in rows[:3]]
+        ph = ",".join("?" * len(ids))
+        seen = {r["id"] for r in rows}
+        try:
+            for r in con.execute(
+                    "SELECT b AS o, note FROM links WHERE a IN (%s) AND rel='similar'"
+                    " UNION SELECT a AS o, note FROM links WHERE b IN (%s) AND rel='similar'"
+                    % (ph, ph), ids + ids):
+                if r["o"] in seen:
+                    continue
+                seen.add(r["o"])
+                row = con.execute(
+                    "SELECT id,kind,title FROM events WHERE id=?", (r["o"],)).fetchone()
+                # 只收 0.70 以上的：实测 0.6~0.7 那一档噪声太多
+                # （「人味掉了」能连到「AI 工具台」「DSH 升级」——都不是一回事）。
+                if row and float(r["note"] or 0) >= 0.70:
+                    assoc.append({"id": row["id"], "kind": row["kind"],
+                                  "title": (row["title"] or "")[:60], "sim": r["note"]})
+                if len(assoc) >= 5:
+                    break
+        except Exception:
+            pass
     con.close()
     emit({"ok": True, "query": q, "verdict": verdict, "note": note,
           "tried": attempts, "count": len(rows),
-          "episodes": episodes,
+          "episodes": episodes, "assoc": assoc,
           "hits": rows, "facts": facts, "procedures": procs})
     return 0
 
@@ -1370,22 +1405,45 @@ _DISTILL_KEYS = ("决定", "结论", "根因", "修复", "改成", "不再", "�
 def _distill_text(body, max_len=300):
     """把长正文压成关键句（规则版，不用模型）。
 
-    和人记事的差别：人记住的不是全文，是几个关键片段 —— 所以保留
-    「首句 + 带结论/根因的词 + 末句」。
+    和人记事的差别：人记住的不是全文，是几个关键片段。
     和上下文压缩的差别：压缩是一次处理一大段历史；这里逐条处理，每条都还在。
+
+    2026-11-05 两轮实测：
+      ① 原判据「按顺序取、一超预算就 break」——3000 字正文只覆盖前 1/3，
+         后面的「结论/根因」整段丢。
+      ② 改成「首末必留 + 中间按关键词挑」——仍不够：这类正文多用
+         【①②③④】分块，**首块一个长句就吃掉整个预算**，②③④ 全没机会。
+    现在：**有【】分块的，每块取开头一句**（保住「做了哪几件事」的骨架），
+    没分块的才退回「首句 + 关键词句 + 末句」。
     """
+    if not body:
+        return ""
+    blocks = [b.strip() for b in re.split(r"(?=【[^】]{1,24}】)", body) if b.strip()]
+    if len(blocks) > 1:
+        heads = []
+        for b in blocks:
+            first = re.split(r"[。\n]", b)[0].strip()
+            if first and first not in heads:
+                heads.append(first)
+        txt = "。".join(heads)
+        if len(txt) > max_len:
+            return txt[:max_len]
+        return txt
+
     parts = [p.strip() for p in re.split(r"[。\n]+", body) if p.strip()]
     if not parts:
         return ""
-    keep = [parts[0]]
-    for p in parts[1:]:
-        if any(k in p for k in _DISTILL_KEYS) and p not in keep:
-            keep.append(p)
-        if sum(len(x) for x in keep) > max_len:
+    if len(parts) <= 2:
+        return "。".join(parts)[:max_len]
+    picked = {0, len(parts) - 1}
+    budget = max_len - len(parts[0]) - len(parts[-1])
+    for i, p in enumerate(parts[1:-1], 1):
+        if budget <= 0:
             break
-    if len(parts) > 2 and parts[-1] not in keep:
-        keep.append(parts[-1])
-    return "。".join(keep)[:max_len]
+        if any(k in p for k in _DISTILL_KEYS) and len(p) <= budget:
+            picked.add(i)
+            budget -= len(p)
+    return "。".join(parts[i] for i in sorted(picked))[:max_len]
 
 
 def cmd_distill(a) -> int:
@@ -1423,6 +1481,14 @@ def cmd_distill(a) -> int:
     if a.apply and plan:
         for p in plan:
             con.execute("UPDATE events SET body=? WHERE id=?", (p["text"], p["id"]))
+            # 正文变了，旧向量就过期 —— 留着它会用「提炼前的语义」去匹配，
+            # 而正文已经不一样了。删掉让 embed.py --build 重算。
+            # （2026-11-05 实测：压完 30 条没重算向量，否定题当场掉了一道。）
+            con.execute("DELETE FROM event_emb WHERE id=?", (p["id"],))
+            # 逐条留痕：sleep_log 只有汇总，事后查不到「哪几条被压过、压了多少」。
+            con.execute(
+                "INSERT INTO distill_log (ts,event_id,old_chars,new_chars) VALUES (?,?,?,?)",
+                (now(), p["id"], p["old_chars"], p["new_chars"]))
         con.execute(
             "INSERT INTO sleep_log (ts,phase,events_in,facts_out,proc_out,merged,note)"
             " VALUES (?,?,?,?,?,?,?)",
@@ -1715,16 +1781,17 @@ def cmd_forget(a) -> int:
         if r["kind"] in ("accident", "correction"):
             protected["lesson"] += 1
             continue
-        # 「用过」= 至少两次 **并且** 180 天内还用过。
-        # 只数次数不看时间，迟早全库都是「用过」；只看到过一次的也只能算
-        # 「顺带出现」不是「真被拿来用」（hits=1 的有 266 条）。
+        # 「用过」= 至少三次 **并且** 90 天内还用过。
+        # 原来门槛是 hits>=2 + 180 天，2026-11-05 实测太松：eval 每跑一轮就给命中的
+        # 事件 +1 hits，跑十几次评测之后 **1288 条（37%）都成了「用过」**，
+        # 分档降权一条都触发不了。改成 hits>=3 + 90 天，才叫「真被依赖」。
         hits = r["hits"] or 0
-        if hits >= 2:
-            if _recently_used(r, 180):
+        if hits >= 3:
+            if _recently_used(r, 90):
                 protected["used"] += 1
                 continue
             protected["stale_used"] += 1
-        elif hits == 1:
+        elif hits >= 1:
             protected["used_once"] += 1
         age = _days_since(r["ts"])
         if age is None:
@@ -1758,9 +1825,25 @@ def cmd_forget(a) -> int:
             dorm.append(r["id"])
             protected["dormant"] += 1
             continue
-        if True:
-            plan.append({"id": r["id"], "title": r["title"][:40], "weight": r["weight"],
-                         "age_days": int(age), "new_weight": max(1, r["weight"] - 10)})
+        # ── 分档降权（2026-11-05 按落云的口径改）──
+        # 原来一律 -10：三个月没碰的和一个月没碰的降一样多，这不叫提纯，叫平均主义。
+        # 现在按「多久没碰 × 碰过几次」分：
+        #   30-90 天 → -5（还可能是「暂时用不上」）
+        #   90-180 天 → -10
+        #   >180 天 → -15（基本确定是不再需要的那类）
+        #   碰过 1 次的，降幅减半（至少被真拿起来过一次，别当它没存在过）
+        # 注意：这是「降优先级」不是「删除」，库还在、recall 仍能查到。
+        if age > 180:
+            drop = 15
+        elif age > 90:
+            drop = 10
+        else:
+            drop = 5
+        if hits == 1:
+            drop = max(3, drop // 2)
+        plan.append({"id": r["id"], "title": r["title"][:40], "weight": r["weight"],
+                     "age_days": int(age), "drop": drop,
+                     "new_weight": max(1, r["weight"] - drop)})
     if not a.dry_run:
         for p in plan:
             con.execute("UPDATE events SET weight=? WHERE id=?", (p["new_weight"], p["id"]))
@@ -2086,6 +2169,12 @@ def _user_noise(title):
         return True
     low = t.lower()
     if "background job" in low or "current runtime context" in low:
+        return True
+    # 2026-11-05 补：导入时 _IMPORT_SKIP 漏掉的几种系统注入。
+    # 实测 1807 条 user 里有 99 条是这些（background job 66 / batching reminder 15 /
+    # approval policy 13 / model changed 5）——它们不是他说的话，混进关系层会污染 brief。
+    if ("batching reminder" in low or "the approval policy changed" in low
+            or "model changed" in low or "updated instructions" in low):
         return True
     if t.startswith('"') or t[:3].upper() == "E:\\":
         return True
