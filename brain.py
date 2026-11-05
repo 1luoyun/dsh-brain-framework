@@ -927,6 +927,11 @@ def cmd_recall(a) -> int:
             # 的 cov 是 0.78/0.86/1.0，却分别排在第 9/5/5）。
             0 if (r.get("coverage") or 0) >= 0.7 else 1,
             -r["score"]))
+        # ★ 排序后必须截断到用户要的条数。
+        # 召回池取 max(limit*5, 30) 是**给排序用的候选**，不是给输出用的。
+        # 2026-11-05 实测：`--limit 10` 却返回 50 条、单次输出 47KB，前 10 条之后
+        # 基本是噪音，还白占上下文（这也可能是思考空转的来源之一）。
+        rows = rows[:a.limit]
         # hits 累加必须放在**排序之后** —— 放在前面时 ids 还是召回池的原始顺序，
         # 加到的根本不是最终排在前面的那几条（2026-11-03 实测：返回顺序
         # [4551, 4558, 4530]，加上的却是第 2/5/6 位）。
@@ -1042,6 +1047,13 @@ def cmd_recall(a) -> int:
         except Exception:
             pass
     con.close()
+    # 只输出对判断有用的字段。其余（fingerprint / rel / salience / coverage /
+    # title_cov / n_hit / strong / score / matched / primed / session / hits）
+    # 是排序与调试用的中间量，灌给模型只是噪音 —— 2026-11-05 实测：50 条 × 19 字段
+    # 光 hits 就占 28KB。`--full` 才全给。
+    if not getattr(a, "full", False):
+        keep = ("id", "ts", "kind", "title", "weight", "snip")
+        rows = [{k: r[k] for k in keep if k in r} for r in rows]
     emit({"ok": True, "query": q, "verdict": verdict, "note": note,
           "tried": attempts, "count": len(rows),
           "episodes": episodes, "assoc": assoc,
@@ -1758,6 +1770,38 @@ def cmd_review(a) -> int:
                      "weight": r["weight"], "title": (r["title"] or "")[:90]}
                     for r in rows[:getattr(a, "limit", 20) or 20]]})
     return 0
+    return 0
+
+
+def cmd_purge_derived(a) -> int:
+    """清理派生数据：作废事件留下的向量。
+
+    为什么需要它：作废（superseded=1）只改 events 表，派生视图不会自动跟着清。
+    2026-11-06 实测：去重 + 清理之后，`event_emb` 里躺着 **3042 条已作废事件的向量**
+    —— 占空间，还可能把「已经删掉的内容」重新带进语义检索里。
+
+    只清**能重建的派生数据**（向量）；事件本体与留痕一律不动。
+    情景段由 episode.py --apply 重建时自动滤掉作废事件，不在这里处理。
+    """
+    con = connect(); ensure_schema(con)
+    n = con.execute(
+        "SELECT count(*) FROM event_emb WHERE id IN"
+        " (SELECT id FROM events WHERE superseded=1)").fetchone()[0]
+    if not n:
+        con.close()
+        emit({"ok": True, "orphan_vectors": 0, "note": "派生数据已经是干净的"})
+        return 0
+    if getattr(a, "apply", False):
+        con.execute("DELETE FROM event_emb WHERE id IN"
+                    " (SELECT id FROM events WHERE superseded=1)")
+        con.commit()
+        con.close()
+        emit({"ok": True, "dry_run": False, "orphan_vectors": n, "deleted": n,
+              "note": "删的是向量不是事件；要补回来就跑 embed.py --build"})
+    else:
+        con.close()
+        emit({"ok": True, "dry_run": True, "orphan_vectors": n,
+              "note": "加 --apply 才真删"})
     return 0
 
 
@@ -2554,6 +2598,10 @@ def main() -> int:
     p = sub.add_parser("brief")
     p.add_argument("--about", required=True, help="打算做的事，一句话")
     p.set_defaults(fn=cmd_brief)
+
+    p = sub.add_parser("purge-derived")
+    p.add_argument("--apply", action="store_true", help="真删（默认只看）")
+    p.set_defaults(fn=cmd_purge_derived)
 
     p = sub.add_parser("rehearse")
     p.add_argument("--about", required=True, help="打算做的动作，一句话")
