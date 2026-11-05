@@ -172,6 +172,35 @@ def check_decay(con):
         "decay_log %d 条；不是「降了且不低于 1」的 %d 条" % (n, bad))
 
 
+def check_sleep_log(con):
+    """睡眠日志的语义自洽（2026-11-05 立）。
+
+    由头很具体：给 forget 加「激活回落」时，我用 edit 插代码，
+    `INSERT INTO sleep_log` 那行被挤进了新写的 for 循环体 —— 一次 forget
+    按待回落事实数写了 **54 条** `merged=0` 的假「转入休眠」日志。
+    而当时 test_brain 14/14 全过、health 也 PASS —— 因为它此前只查表和结构，
+    **没有任何一项检查派生日志的语义**。这条就是补那个盲区。
+
+    判据：`phase='dormant'` 必须真休眠了东西（merged > 0）。
+    原代码有 `if dorm:` 保护，所以 merged=0 的 dormant 记录逻辑上不可能出现。
+    """
+    bad = con.execute(
+        "SELECT COUNT(*) FROM sleep_log WHERE phase='dormant'"
+        " AND (merged IS NULL OR merged = 0)").fetchone()[0]
+    if bad:
+        add("睡眠日志", False,
+            "dormant 记录里有 %d 条 merged=0 —— 没休眠任何东西却写了休眠日志" % bad)
+        return
+    dup = con.execute(
+        "SELECT COUNT(*) FROM (SELECT ts FROM sleep_log GROUP BY ts HAVING COUNT(*) > 5)"
+    ).fetchone()[0]
+    if dup:
+        add("睡眠日志", False, "有 %d 个时间点写了超过 5 条日志（疑似批量污染）" % dup)
+        return
+    n = con.execute("SELECT COUNT(*) FROM sleep_log").fetchone()[0]
+    add("睡眠日志", True, "%d 条；dormant 语义自洽，无同秒批量写入" % n)
+
+
 def check_working():
     try:
         out = subprocess.run(
@@ -270,7 +299,7 @@ def main():
 
     con = connect()
     for fn in (check_tables, check_schema, check_events, check_derived, check_episodes,
-               check_evidence, check_decay, check_meta, check_corrections):
+               check_evidence, check_decay, check_sleep_log, check_meta, check_corrections):
         try:
             fn(con)
         except Exception as e:
