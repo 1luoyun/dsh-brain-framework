@@ -1322,7 +1322,7 @@ def cmd_recall(a) -> int:
     # eval #32「角色突然自己讲起故事」原本靠程序层命中，收紧后 hit@10 掉到 48。
     # 折中：**单线索可以，但要同时有词面覆盖率做担保**（top_cov>=0.15 或 strong）。
     strong_procs = any(v["n"] >= 2 for v in proc_cues.values())
-    proc_ok = bool(procs) and (top_cov >= 0.15 or any_strong)
+    proc_ok = bool(procs) and (top_cov >= 0.50 or any_strong)
     if ((top_cov >= 0.55 and top_nhit >= 2) or vec_top >= 0.60 or any_strong
             or strong_facts or strong_procs or proc_ok or kind_hit):
         verdict = "found"
