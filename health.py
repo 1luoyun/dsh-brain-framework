@@ -208,6 +208,41 @@ def check_sleep_log(con):
     add("睡眠日志", True, "%d 条；dormant 语义自洽，无同秒批量写入" % n)
 
 
+def check_link_integrity(con):
+    """派生引用完整性（2026-11-05 立）。
+
+    已有 check_derived 只查「孤儿向量」（向量指向不存在的事件）。但 `links`
+    和 `event_emb` 都还有另一种脏法：**指向已作废（superseded=1）的事件**。
+    这跟 2026-11-06 记过的那条同源 ——「作废只改 events 表，派生视图不会自动跟」。
+
+    实测（2026-11-05）：12238 条边、3500+ 条向量里，两种情况都是 **0**，
+    说明现在的清理逻辑是对的（episode/assoc/embed 都只处理 superseded=0）。
+    加这条不是因为它现在坏了，是给将来兜底 —— 一旦有人写了个不清作的派生脚本，
+    这里会当场红。
+
+    判据：links 两端都必须是存活的 events；event_emb 不得有作废事件的向量。
+    """
+    bad_links = con.execute(
+        "SELECT COUNT(*) FROM links l WHERE"
+        " NOT EXISTS (SELECT 1 FROM events e WHERE e.id = l.a)"
+        " OR NOT EXISTS (SELECT 1 FROM events e WHERE e.id = l.b)"
+        " OR EXISTS (SELECT 1 FROM events e WHERE e.id = l.a AND e.superseded = 1)"
+        " OR EXISTS (SELECT 1 FROM events e WHERE e.id = l.b AND e.superseded = 1)"
+    ).fetchone()[0]
+    bad_emb = con.execute(
+        "SELECT COUNT(*) FROM event_emb m WHERE EXISTS"
+        " (SELECT 1 FROM events e WHERE e.id = m.id AND e.superseded = 1)"
+    ).fetchone()[0]
+    if bad_links or bad_emb:
+        add("引用完整性", False,
+            "links 有 %d 条断链或指向作废事件；event_emb 有 %d 条作废事件的向量"
+            % (bad_links, bad_emb))
+        return
+    nl = con.execute("SELECT COUNT(*) FROM links").fetchone()[0]
+    nm = con.execute("SELECT COUNT(*) FROM event_emb").fetchone()[0]
+    add("引用完整性", True, "links %d 条、向量 %d 条，两端均存活" % (nl, nm))
+
+
 def check_working():
     try:
         out = subprocess.run(
@@ -306,7 +341,8 @@ def main():
 
     con = connect()
     for fn in (check_tables, check_schema, check_events, check_derived, check_episodes,
-               check_evidence, check_decay, check_sleep_log, check_meta, check_corrections):
+               check_evidence, check_decay, check_sleep_log, check_link_integrity,
+               check_meta, check_corrections):
         try:
             fn(con)
         except Exception as e:
