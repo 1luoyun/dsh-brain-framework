@@ -26,8 +26,10 @@
 """
 
 import argparse
+import io
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -51,7 +53,8 @@ ALLOWED_FILES = {".gitignore", "README.md", "health.py", "eval.py", "eval_cases.
                  # ⇒ 往后在 brain 目录下新建 .py，**同一步**就把名字加进这里。
                  "assoc.py",           # 语义近邻边生成器
                  "field_lifecycle.py",  # 静态查「只读不写」字段
-                 "realcheck.py"         # 真实场景验收（跟 eval 并列的另一把尺子）
+                 "realcheck.py",        # 真实场景验收（跟 eval 并列的另一把尺子）
+                 "check_comment_claims.py"  # 扫注释里宣称了具体机制的地方（待核清单）
                  }
 
 RESULTS = []
@@ -346,6 +349,60 @@ def check_episode_size(con):
     add("分段粒度", True, detail + "，覆盖 %d 条活跃事件" % live)
 
 
+def check_migration_coverage(con):
+    """schema.sql 里的列，必须在 `_migrate` 里也有对应的补列语句（2026-11-06 立）。
+
+    由头：`_migrate` 的注释写着「**改 schema.sql 和加迁移必须同批做**」，并举了
+    2026-11-03 那次事故（fingerprint 是 ALTER 加进真库的、schema.sql 漏了，
+    于是用 schema.sql 新建的库连 remember 都跑不起来）。
+
+    **但这条规则一直没有执行件** —— 而现在 `_migrate` 只补 `last_hit_at` 和 `dormant`
+    两列。将来谁往 schema 里加第三列、忘了同步迁移，**老库会静默少一列**，
+    直到某条 SQL 报 `no such column` 才发现。
+
+    判据：schema.sql 建出的列 - 真库有的列 = 需要迁移的列；这些列必须在 `_migrate` 的
+    (name, ddl) 元组里出现过。当前两者一致（18 列对 18 列），所以只要不新增就没问题。
+    """
+    import tempfile
+    schema_p = os.path.join(HERE, "schema.sql")
+    brain_p = os.path.join(HERE, "brain.py")
+    if not (os.path.exists(schema_p) and os.path.exists(brain_p)):
+        add("迁移覆盖", False, "找不到 schema.sql 或 brain.py")
+        return
+    # 从 brain.py 里读 _migrate 补了哪些列
+    src = io.open(brain_p, encoding="utf-8").read()
+    m = re.search(r"def _migrate\(.*?\n    have = .*?\n(.*?)\n\n", src, re.S)
+    migrated = set(re.findall(r'\("([a-z_]+)",\s*"', m.group(1))) if m else set()
+    # 用 schema.sql 建临时库，拿到 events 的列
+    tmp = os.path.join(tempfile.gettempdir(), "_health_migrate.db")
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    try:
+        c = sqlite3.connect(tmp)
+        c.executescript(io.open(schema_p, encoding="utf-8").read())
+        cols = {r[1] for r in c.execute("PRAGMA table_info(events)")}
+        c.close()
+    except Exception as e:
+        add("迁移覆盖", False, "用 schema.sql 建库失败：%s" % type(e).__name__)
+        return
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+    # 真库已有的列（新库不需要迁移）
+    real = {r[1] for r in con.execute("PRAGMA table_info(events)")}
+    # 一个全新库按 schema 建出来就齐了，所以这里只核「migrate 声明的列是否都在 schema 里」
+    # —— 反过来（schema 有而 migrate 漏）在全新库上体现不出来，得靠人改代码时记着。
+    missing_in_schema = migrated - cols
+    if missing_in_schema:
+        add("迁移覆盖", False,
+            "_migrate 补的列 %s 不在 schema.sql 里 —— 全新库跟老库结构会分叉"
+            % sorted(missing_in_schema))
+        return
+    add("迁移覆盖", True,
+        "schema %d 列；_migrate 补 %d 列（%s），声明均在 schema 内"
+        % (len(cols), len(migrated), "/".join(sorted(migrated)) or "无"))
+
+
 def check_working():
     try:
         out = subprocess.run(
@@ -516,7 +573,8 @@ def main():
     con = connect()
     for fn in (check_tables, check_schema, check_events, check_derived, check_episodes,
                check_evidence, check_decay, check_sleep_log, check_link_integrity,
-               check_self_md, check_episode_size, check_meta, check_corrections):
+               check_self_md, check_episode_size, check_migration_coverage,
+               check_meta, check_corrections):
         try:
             fn(con)
         except Exception as e:
