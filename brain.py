@@ -312,7 +312,7 @@ def cmd_feedback(a) -> int:
     con = connect(); ensure_schema(con)
     row = con.execute("SELECT id, weight, salience FROM events WHERE id=?", (a.id,)).fetchone()
     if not row:
-        con.close(); emit({"ok": False, "error": "没有这条事件"}); return 1
+        con.close(); emit({"ok": False, "error": "没有这条事件。id 要用 recall / working / stats 查出来的真 id，不是标题也不是序号。"}); return 1
     sign = "good" if a.good else ("bad" if a.bad else "correct")
     new_w = clamp(row["weight"] + FB[sign])
     # 2026-11-05：salience 从上线起就是**死字段** —— schema 注释写着「feedback 会推它」，
@@ -1677,7 +1677,7 @@ def cmd_similar(a) -> int:
     con = connect(); ensure_schema(con)
     me = con.execute("SELECT id,title,kind,fingerprint FROM events WHERE id=?", (a.id,)).fetchone()
     if not me:
-        con.close(); emit({"ok": False, "error": "没有这条事件"}); return 1
+        con.close(); emit({"ok": False, "error": "没有这条事件。id 要用 recall / working / stats 查出来的真 id，不是标题也不是序号。"}); return 1
     my_all = set((me["fingerprint"] or "").split("|"))
     my = my_all - {me["kind"]}          # kind 单独算，不占"要素"名额
     # 2026-11-05 补 superseded=0：原来只写 `WHERE id!=?`，作废事件（3061 条、
@@ -1940,7 +1940,7 @@ def cmd_import_user(a) -> int:
     """
     sq = os.path.join(os.path.expanduser("~"), ".dsh", "session-query-index.db")
     if not os.path.exists(sq):
-        emit({"ok": False, "error": "会话索引不存在（宿主的 session-query 没建）"})
+        emit({"ok": False, "error": "会话索引不存在（宿主的 session-query 没建）。这不是数据丢了 —— 宿主启动后才会建它，重启一次就有；本命令只读已存在的索引。"})
         return 1
     try:
         scon = sqlite3.connect("file:%s?mode=ro" % sq.replace("\\", "/"), uri=True)
@@ -2587,7 +2587,7 @@ def cmd_audit_corrections(a) -> int:
     since = time.time() - a.days * 86400
     sq = os.path.join(os.path.expanduser("~"), ".dsh", "session-query-index.db")
     if not os.path.exists(sq):
-        emit({"ok": False, "error": "会话索引不存在（宿主的 session-query 没建）"})
+        emit({"ok": False, "error": "会话索引不存在（宿主的 session-query 没建）。这不是数据丢了 —— 宿主启动后才会建它，重启一次就有；本命令只读已存在的索引。"})
         return 1
     try:
         scon = sqlite3.connect("file:%s?mode=ro" % sq.replace("\\", "/"), uri=True)
@@ -2883,7 +2883,7 @@ def cmd_source(a) -> int:
                      (a.id,)).fetchone()
     con.close()
     if not ev:
-        emit({"ok": False, "error": "没有这条事件"}); return 1
+        emit({"ok": False, "error": "没有这条事件。id 要用 recall / working / stats 查出来的真 id，不是标题也不是序号。"}); return 1
     try:
         base = time.mktime(time.strptime(str(ev["ts"])[:19], "%Y-%m-%d %H:%M:%S"))
     except Exception:
@@ -2891,7 +2891,7 @@ def cmd_source(a) -> int:
 
     sq = os.path.join(os.path.expanduser("~"), ".dsh", "session-query-index.db")
     if not os.path.exists(sq):
-        emit({"ok": False, "error": "会话索引不存在（宿主的 session-query 没建）"}); return 1
+        emit({"ok": False, "error": "会话索引不存在（宿主的 session-query 没建）。这不是数据丢了 —— 宿主启动后才会建它，重启一次就有；本命令只读已存在的索引。"}); return 1
 
     lo = (base - a.window * 60) * 1000.0
     hi = (base + a.window * 60) * 1000.0
