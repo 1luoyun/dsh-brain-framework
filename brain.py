@@ -2927,6 +2927,12 @@ def main() -> int:
     p.add_argument("--no-count", action="store_true",
                    help="不累加 hits。评测脚本必须带 —— 否则被当答案的记录会被刷成"
                         "「用过几百次」，永远逃过衰减")
+    # 2026-11-05 补：`cmd_recall` 里一直有 `if not getattr(a, "full", False)` 那一段，
+    # 但**这个参数从没注册过** —— 于是 --full 永远传不进来，「输出全部字段」
+    # 这个能力实际上不存在。今天想调 coverage/n_hit 时才发现（只能去改代码打印）。
+    p.add_argument("--full", action="store_true",
+                   help="输出全部字段（coverage / n_hit / score / matched / padded 等）。"
+                        "默认只留 6 个有判断价值的字段 —— 50 条 x 19 字段光 hits 就 28KB")
     p.add_argument("--count-top", type=int, default=3,
                    help="只给前几条累加 hits（默认 3）。一次返回 10 条时，后几条"
                         "多半只是被列表带出来的，不该算「用过」")
