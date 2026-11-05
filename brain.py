@@ -1957,6 +1957,13 @@ def cmd_forget(a) -> int:
                         (now(), p["id"], p["weight"], p["new_weight"], "ebbinghaus"))
         if dorm:
             con.executemany("UPDATE events SET dormant=1 WHERE id=?", [(i,) for i in dorm])
+            # 2026-11-05 修复：这行原来在 `if dorm:` 块里，我加激活回落时把它挤进了
+            # 下面的 for 循环 —— 结果「每条待回落的事实」都写一条 `merged=0` 的假
+            # dormant 日志（实测一次 forget 写了 54 条）。它必须留在这里。
+            con.execute("INSERT INTO sleep_log (ts,phase,events_in,facts_out,proc_out,merged,note)"
+                        " VALUES (?,?,?,?,?,?,?)",
+                        (now(), "dormant", 0, 0, 0, len(dorm),
+                         "forget: %d 条转入休眠（可 --include-dormant 唤醒）" % len(dorm)))
         # ── 事实的激活回落（2026-11-05 补）──
         # activation 原来只升不降（被 recall 带出就 +0.08，封顶 1.0），跑久了会全部满值，
         # 就失去「哪条才是真常用」的区分度 —— 等于把成熟期白做了。
@@ -1976,10 +1983,6 @@ def cmd_forget(a) -> int:
             if _d > 30:
                 con.execute("UPDATE facts SET activation=MAX(0.3, activation-0.01) WHERE id=?", (_id,))
                 n_act_dec += 1
-            con.execute("INSERT INTO sleep_log (ts,phase,events_in,facts_out,proc_out,merged,note)"
-                        " VALUES (?,?,?,?,?,?,?)",
-                        (now(), "dormant", 0, 0, 0, len(dorm),
-                         "forget: %d 条转入休眠（可 --include-dormant 唤醒）" % len(dorm)))
         con.commit()
     con.close()
     emit({"ok": True, "dry_run": bool(a.dry_run), "candidates": len(plan),
