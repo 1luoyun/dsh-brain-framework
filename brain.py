@@ -2922,6 +2922,11 @@ def main() -> int:
     p.add_argument("--with-episode", action="store_true",
                    help="附带「命中的事落在哪段经历里」。默认关：段粒度（平均 5 条、最长 83 条）"
                         "跟查询命中粒度（10-20 条）对不上，按「命中几条」挑段必然是噪声")
+    # 2026-11-05 补：`cmd_recall` 里有 `not getattr(a, "no_assoc", False)` 控制联想层，
+    # 但 --no-assoc **从没注册过** —— 跟 --full 一模一样的病：读得到、传不进。
+    p.add_argument("--no-assoc", action="store_true",
+                   help="关掉联想层（顺着语义近邻边再走一跳）。默认开 —— "
+                        "它是「想到一半想起了别的」，不是答案；关掉能更快、更聚焦")
     p.add_argument("--no-vector", action="store_true",
                    help="不做语义补充（纯词法）。评测纯词法能力、或需要快的时候用")
     p.add_argument("--no-count", action="store_true",
