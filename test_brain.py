@@ -142,6 +142,27 @@ def main():
         ok("快照可打开", c.execute("PRAGMA integrity_check").fetchone()[0] == "ok")
         c.close()
 
+    print("\n--- _pick_by_sem（纯函数，brief/recall 三层共用）---")
+    # 2026-11-05 立。它把「语义挑 + 词面并」收成一个判据，三处共用；
+    # 重构时最容易静默改坏的就是这种「到处在用、但没单测」的小函数。
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location("_brainmod", os.path.join(HERE, "brain.py"))
+    _bm = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_bm)
+    _items = [{"id": 1, "t": "改配置先备份"}, {"id": 2, "t": "删除走回收站"},
+              {"id": 3, "t": "完全无关的东西"}]
+    _r = _bm._pick_by_sem(_items, [0.90, 0.85, 0.30], "t", min_sim=0.50, top_gap=0.10)
+    ok("语义挑出高分两条", [x["id"] for x in _r] == [1, 2], str([x["id"] for x in _r]))
+    _r2 = _bm._pick_by_sem(_items, [0.90, 0.85, 0.30], "t", min_sim=0.50, top_gap=0.03)
+    ok("top_gap 收窄后只留最高分", [x["id"] for x in _r2] == [1],
+       str([x["id"] for x in _r2]))
+    _r3 = _bm._pick_by_sem(_items, [], "t", hit_fn=lambda s: "回收站" in s)
+    ok("无语义时走词面并集", [x["id"] for x in _r3] == [2], str([x["id"] for x in _r3]))
+    _r4 = _bm._pick_by_sem(_items, [0.90, 0.85, 0.30], "t", min_sim=0.50, top_gap=0.10,
+                           hit_fn=lambda s: "无关" in s)
+    ok("词面命中与语义并集不重复", [x["id"] for x in _r4] == [1, 2, 3],
+       str([x["id"] for x in _r4]))
+
     print()
     print("通过 %d / 失败 %d" % (len(PASS), len(FAIL)))
     if FAIL:
