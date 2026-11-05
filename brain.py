@@ -179,7 +179,14 @@ def score(row) -> float:
         ts = time.time()
     age = max(0.0, (time.time() - ts) / 86400.0)
     s = max(1.0, (w / 10.0) * 7.0)          # 记忆强度：越重要忘得越慢
-    retention = math.exp(-age / s)
+    # 2026-11-05 试（依据 FadeMem / arXiv 2601.18642）：它的衰减是
+    #   v(t) = v(0) * exp(-λ * (t-τ)**β)
+    # **带形状参数 β** —— 长期记忆 β=0.8（次线性：前期快、后期慢），短期 1.2。
+    # 我这原来是纯指数（等价 β=1）。注意这跟「把半衰系数调大」不是一回事：
+    # 那次是整体减速（老的全都浮上来，hit@10 掉 3）；β<1 是**改曲线形状**，
+    # 前期照样掉得快，只是过了 S 天之后尾巴变长。
+    _beta = float(os.environ.get("BRAIN_DECAY_BETA") or 1.0)
+    retention = math.exp(-((age / s) ** _beta)) if _beta != 1.0 else math.exp(-age / s)
     sal = float(row["salience"]) if row["salience"] is not None else 1.0
     sting = 1.25 if row["emotion"] == "sting" else 1.0
     used = 1.0 + min(1.0, (row["hits"] or 0) * 0.10)   # 常被取用 = 抗衰减的真正来源
