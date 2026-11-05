@@ -395,6 +395,23 @@ def _idf(n_docs: int, df: int) -> float:
     return math.log(1.0 + (n_docs + 1.0) / (df + 1.0))
 
 
+def _time_window(q: str):
+    """查询里的时间词 → 天数窗口；没提时间返回 None。
+
+    2026-11-05 立。由头：问「今天都干了什么」，返回 6 条里只有 4 条是今天的；
+    问「最近做了什么」直接全错 —— 返回的全是两个月前的章节记录。
+    「最近」这个词没有时间语义，检索器只按词面撞，撞到「做了什么」就收工。
+    所以把时间词翻译成一个窗口，命中窗内的事件额外加权。
+    """
+    if any(w in q for w in ("今天", "今日", "刚才", "刚刚")):
+        return 1.0
+    if any(w in q for w in ("昨天", "昨日")):
+        return 2.0
+    if any(w in q for w in ("最近", "这几天", "近期", "这两天")):
+        return 3.0
+    return None
+
+
 def _term_weights(con, terms):
     """每个查询词的 IDF 与总和。
 
@@ -891,6 +908,29 @@ def cmd_recall(a) -> int:
         attempts.append({"cue": "vector", "added": added_v, "min_sim": 0.5})
 
     episodes = []
+    # 时间意图补池（2026-11-05）：查询带「今天/昨天/最近」时，先把窗口内的事件
+    # 拉进召回池。只做加权是不够的 —— 「最近做了什么」在词面上只会撞到「做了什么」，
+    # 池子里全是两个月前的章节记录，给它们加权、没加权的，近期事件根本不在池里。
+    # 这一步是"补召回"，不是"改排序"：池子有了，后面的 score 才有得排。
+    _tw = _time_window(q)
+    if _tw is not None:
+        _cutoff = time.strftime("%Y-%m-%d %H:%M:%S",
+                                time.localtime(time.time() - _tw * 86400))
+        _have = {r["id"] for r in rows}
+        _extra = [dict(x) for x in con.execute(
+            "SELECT e.id,e.ts,e.kind,e.title,e.weight,e.emotion,e.salience,e.hits,e.session"
+            " FROM events e WHERE e.superseded=0 AND e.ts >= ?"
+            " ORDER BY e.weight DESC, e.ts DESC LIMIT ?",
+            (_cutoff, max(20, a.limit * 3)))]
+        _added = 0
+        for x in _extra:
+            if x["id"] not in _have:
+                rows.append(x)
+                _have.add(x["id"])
+                _added += 1
+        if _added:
+            attempts.append({"cue": "time_window", "days": _tw, "added": _added})
+
     if rows:
         # 启动效应（priming）：最近 24 小时内发生的事更容易被想起
         now_ts = time.time()
@@ -946,6 +986,17 @@ def cmd_recall(a) -> int:
             r["score"] = round(base * prime * boost, 1)
             r["matched"] = boost > 0.8
             r["primed"] = prime > 1.0
+        # 时间意图加权（2026-11-05）：查询里带「今天/昨天/最近」时，命中窗口内的事件
+        # 提到最前。不只给 1.6 倍 —— 实测那样没用：窗口内的事件词面通常对不上，
+        # boost 会掉到下限 0.15，1.6 倍之后仍然压不过两个月前的旧记录。
+        # 既然用户问的是「最近」，那就是**按时间要答案**，窗内的排前面才对。
+        _win = _time_window(q)
+        if _win is not None:
+            for r in rows:
+                _d = _days_since(r.get("ts"))
+                if _d is not None and _d <= _win:
+                    r["score"] = round(r["score"] * 6.0, 1)
+                    r["timefit"] = True
         # 精确标题命中优先：用户把某条标题原样打出来，多半就是在找那条。
         # 2026-11-03 合成评测实测：拿标题当查询，30 条里 **0 条排第一** ——
         # 全被「词面相近但更新、更重」的记录压过去。这不是排序调参问题，
@@ -976,6 +1027,16 @@ def cmd_recall(a) -> int:
 
         rows.sort(key=lambda r: (
             0 if r.get("exact_title") else 1,
+            # 2026-11-05：`timefit`（落在查询时间窗内）**单独占一档**，压在所有
+            # 覆盖率分档之上。先试过跟 exact_title 同档，不行 —— 同档内还要比
+            # title_cov / coverage，而窗内新事件的词面覆盖率天然低，会被旧记录
+            # 在档内挤下去（实测「最近做了什么」：--limit 10 时今天那条排第 8）。
+            # 用户问「最近」，答案就该按时间给，不该再让词面覆盖率翻盘。
+            0 if r.get("timefit") else 1,
+            # 窗内按时间倒序。11-03 那批也在 3 天窗口里，会跟今天的同时拿到
+            # timefit —— 只靠这个分不出「今天」和「2.8 天前」，档内又回到按覆盖率排。
+            # 用户问「最近」，最近的该在最前面。
+            -(_ts_of(r.get("ts")) or 0.0) if r.get("timefit") else 0.0,
             # 标题覆盖过半的单独一档：用户原样问一条标题时，答案就是那条
             # 原始记录，而不是正文里整段引用它的新事件（4 号题实测）。
             # 阈值取 0.35 不是 0.5：1 号题的答案 #4535 标题含 openAt/改成/
