@@ -107,6 +107,21 @@ def main():
     ok("不带待办词时不塞未结项", r4 and not (r4.get("open_items") or []),
        "n=%d" % len((r4 or {}).get("open_items") or []))
 
+    print("\n--- 工作记忆（working）---")
+    # 2026-11-05 补。由头：今天改过 working 的背景组排序（weight 主排 → score 主排），
+    # 但它是唯一**没有任何测试覆盖**的改动点 —— 不在 eval、不在 realcheck、也不在
+    # test_brain 的断言里，只能靠人工看输出。补上最基础的几条。
+    w = js(["working"])
+    ok("working 能跑", w and w.get("ok"), str((w or {}).get("ok")))
+    ok("working 有 attention", w and (w.get("attention") or []),
+       "n=%d" % len((w or {}).get("attention") or []))
+    ok("working 有 episode_now 字段", w and "episode_now" in (w or {}))
+    ok("working 带未结项", w and isinstance(w.get("open_items"), list),
+       "n=%d" % len((w or {}).get("open_items") or []))
+    # 刚写的那条 open item 应该在其中（沙盘里只有 1 条）
+    _ids = [o.get("id") for o in ((w or {}).get("open_items") or [])]
+    ok("未结项 id 正确", _ids == [1], str(_ids))
+
     print("\n--- 情景分段 ---")
     con = sqlite3.connect(os.path.join(SAND, "brain.db"))
     n_ep = con.execute("SELECT count(*) FROM episodes").fetchone()[0]
