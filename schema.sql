@@ -123,7 +123,11 @@ CREATE TABLE IF NOT EXISTS facts (
   created_at      TEXT    NOT NULL,
   -- 下面两列同样是 ALTER 加进真库后没同步进来的（2026-11-03 由 test_brain.py 抓到）
   domain          TEXT,                        -- dsh / fs / encoding / judge / runtime / pattern
-  hits            INTEGER NOT NULL DEFAULT 0,   -- 被 recall 带出来的次数
+  hits            INTEGER NOT NULL DEFAULT 0,   -- ⚠ **废字段**（2026-11-06 查证）：全库 63 条恒为 0，
+                                                 -- 代码里**零读零写**（field_lifecycle 静态扫描 + 全目录 grep 双重确认）。
+                                                 -- 它的职责已由下面的 `activation` 承担 ——
+                                                 -- 只留列不删，是因为删列要迁移；**别以为它在工作**。
+                                                 -- 若将来真要清理，先确认没有外部脚本按列名读它。
   -- 2026-11-05 加：记忆成熟期（对标 arXiv 2605.08538 的 engram maturation）。
   -- 依据 Kitamura 的发现：记忆痕迹形成即刻，但**先是沉默的**，之后才变得可检索。
   -- 所以新事实不该一落地就跟沉淀多年的老规则抢同一份注意力。
