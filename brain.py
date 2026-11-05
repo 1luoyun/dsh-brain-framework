@@ -2851,6 +2851,17 @@ def cmd_brief(a) -> int:
     acc = [dict(r) for r in con.execute(
         "SELECT id,ts,title,weight FROM events WHERE superseded=0 AND kind='accident'")]
     rel_acc = [r for r in acc if hit(r["title"])]
+    # 2026-11-06 补：程度意图。问「最重的事故」「我犯过最严重的错误」时，
+    # 线索词里只有「最重/最严重/事故/错误」这些**词面上撞不上标题**的字，
+    # 实测两个都返回 accidents=0 —— 而「动手前先看最重的那几起」正是 brief 该做的事。
+    # 处理跟 recall 的 degree 补池同源：带程度词就按权重补一批，不是只加权。
+    _bd = _degree_intent(q)
+    if _bd is not None:
+        _seen = {r["id"] for r in rel_acc}
+        for r in acc:
+            if (r["weight"] or 0) >= _bd and r["id"] not in _seen:
+                rel_acc.append(r)
+                _seen.add(r["id"])
     rel_acc.sort(key=lambda r: -(r["weight"] or 0))
 
     # ── 他说过的话 ──
