@@ -3027,10 +3027,10 @@ def main() -> int:
     p.set_defaults(fn=lambda a: (ensure_schema(connect()), emit({"ok": True, "db": DB}), 0)[-1])
 
     p = sub.add_parser("remember", help="记一件事（唯一写入点）")
-    p.add_argument("--kind", required=True)
-    p.add_argument("--title", required=True)
-    p.add_argument("--body"); p.add_argument("--weight", type=int)
-    p.add_argument("--emotion"); p.add_argument("--actor", default="me")
+    p.add_argument("--kind", required=True, help="类型：done/learn/accident/correction/decision")
+    p.add_argument("--title", required=True, help="一句话说清这件事（至少 4 字）")
+    p.add_argument("--body", help="细节：发生了什么 + 结论是什么"); p.add_argument("--weight", type=int, help="重要度 1-100（事故 90+、决定 70-89、日常 40-69）")
+    p.add_argument("--emotion", help="情绪标记（如 sting），会加强衰减保护"); p.add_argument("--actor", default="me")
     p.add_argument("--ref", action="append"); p.add_argument("--source")
     p.add_argument("--decay-at")
     p.add_argument("--supersedes", type=int, action="append",
@@ -3039,7 +3039,7 @@ def main() -> int:
     p.set_defaults(fn=cmd_remember)
 
     p = sub.add_parser("recall", help="按线索查记忆（事件/事实/步骤/禁令/未结项）"); p.add_argument("query")
-    p.add_argument("--limit", type=int, default=10)
+    p.add_argument("--limit", type=int, default=10, help="最多返回几条（默认 10）")
     p.add_argument("--include-dormant", action="store_true",
                    help="连休眠记录一起查。休眠 = 长期不用已退到后台，不是删除；"
                         "要找很久以前的事时用它唤醒")
