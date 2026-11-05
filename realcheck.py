@@ -171,6 +171,8 @@ INTENT_CASES = [
     ("最好用的搜索方式", None, None, None),
     ("删除文件", None, None, None),              # 有「删除」但不是问事故
     ("怎么让 agent 别陷入循环", None, None, None),  # 「别」不是类型词
+    ("我选了一个文件", None, None, None),        # 「选了」是操作不是决策（2026-11-05 实测误触发）
+    ("决定因素是什么", None, None, None),        # 「决定」是名词主语，不是「做过决定」
     ("最近做了什么", 3.0, None, None),
     ("今天都干了什么", 1.0, None, None),
     ("昨天改了什么配置", 2.0, None, None),

@@ -411,7 +411,11 @@ def _kind_intent(q: str):
         return "accident"
     if any(w in q for w in ("教训", "学到", "反思")):
         return "learn"
-    if any(w in q for w in ("决定", "取舍", "选了")):
+    if any(w in q for w in ("做了什么决定", "做过什么决定", "哪些决定", "做过哪些取舍",
+                            "选了哪个", "选了什么方案", "取舍是什么")):
+        # 2026-11-05 收紧：原来写的是裸的「决定」「选了」，实测两条误触发 ——
+        # 「我选了一个文件」（这是操作，不是决策）、「决定因素是什么」（这是名词主语）。
+        # 要求它是个**动作短语**才算。
         return "decision"
     if any(w in q for w in ("被纠正", "纠正过", "被骂")):
         return "correction"
