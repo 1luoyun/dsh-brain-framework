@@ -106,6 +106,23 @@ class Handler(BaseHTTPRequestHandler):
             if _SRV is not None:
                 threading.Thread(target=_SRV.shutdown, daemon=True).start()
             return self._json({"ok": True})
+        if urlparse(self.path).path == "/sim":
+            # 2026-11-05 加：GET 版受 URL 长度限制，只能每批 50 条，
+            # brief 要算 364 条就是七八次往返、每一次都在等 socket（实测占掉
+            # brief 2 秒里的 1.7 秒）。POST 一次发完，条数不再影响往返次数。
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                payload = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
+                text = payload.get("q") or ""
+                texts = payload.get("texts") or []
+                if not text or not texts:
+                    return self._json({"ok": False, "error": "empty"}, 400)
+                qv = encode(text)
+                tv = _enc.encode(list(texts))
+                sims = (tv @ qv).tolist()
+                return self._json({"ok": True, "sims": [round(float(s), 4) for s in sims]})
+            except Exception as e:
+                return self._json({"ok": False, "error": str(e)}, 500)
         return self._json({"ok": False, "error": "not found"}, 404)
 
     def do_GET(self):

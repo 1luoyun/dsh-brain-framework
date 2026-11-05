@@ -401,14 +401,27 @@ def _term_weights(con, terms):
     库里出现 0 次的词**不计入分母** —— 它不可能命中，算进去只会让覆盖率永远
     到不了线（2026-11-03：「竹竿」这类词在库里不存在，却把负例的分母撑大）。
     若全部词都不在库里，总和为 0，调用方据此直接判「无词面依据」。
+
+    2026-11-05 改：**一次扫描算完所有词**。原来每个词单独发一条
+    `count(*) ... WHERE title LIKE ? OR body LIKE ?`，而带通配符的 LIKE 必然
+    全表扫 —— brief 的 clues 动辄十几个，就是十几次扫全库，实测 2.2 秒里
+    绝大部分耗在这。合并成一条 SUM(CASE...) 后是同样一次扫描出全部 df，
+    算出来的 IDF 值一个不差（同样的 n 与 df）。
     """
     n = con.execute("SELECT count(*) FROM events WHERE superseded=0").fetchone()[0]
-    ws, tot = [], 0.0
+    if not terms:
+        return [], 0.0
+    one = "SUM(CASE WHEN (title LIKE ? OR body LIKE ?) THEN 1 ELSE 0 END)"
+    params = []
     for t in terms:
-        df = con.execute(
-            "SELECT count(*) FROM events WHERE superseded=0"
-            " AND (title LIKE ? OR body LIKE ?)",
-            ("%" + t + "%", "%" + t + "%")).fetchone()[0]
+        params.append("%" + t + "%")
+        params.append("%" + t + "%")
+    row = con.execute(
+        "SELECT %s FROM events WHERE superseded=0" % ", ".join([one] * len(terms)),
+        params).fetchone()
+    ws, tot = [], 0.0
+    for df in row:
+        df = df or 0
         w = _idf(n, df) if df > 0 else 0.0
         ws.append(w)
         tot += w
@@ -524,6 +537,17 @@ def _sem_sims(q, texts):
     超过服务端的 URL 上限会被拒（2026-11-04 实测：user_said 恒空，
     根因就是这里整批发，`urlopen` 抛异常被吞成 None）。
     每批 50 条，URL 长度可控，拼接结果对调用方透明。
+
+    **2026-11-05 试过 POST 一次发完，反而更慢，已回滚 —— 别再来一遍**：
+    服务端加了 POST /sim（能收任意长度），实测 358 条真实文本——
+      POST 一次         2.96s
+      GET 每批 50 条     1.82s   ← 现在用的
+      GET 每批 20 条     1.75s
+    原因不是网络往返，是 **batch 内 pad 到最长**：整批发时 pad 到全局最长（164 字），
+    分批发时每批各自 pad，平均短得多。transformer 的 attention 又是 O(n²)，
+    pad 一多就贵。所以「少往返」在这里是错的优化方向，**分批反而更快**。
+    （顺带：brief 那 2 秒里大部分是服务端在算，socket 等待里含着它，别被 profiler 的
+    recv_into 骗了。）
     """
     if not texts:
         return []
