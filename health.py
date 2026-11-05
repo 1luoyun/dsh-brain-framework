@@ -268,6 +268,40 @@ def check_link_integrity(con):
         % (nl, nm, nf, np_))
 
 
+def check_self_md(con=None):
+    """SELF.md 必须是 UTF-8 无 BOM 且含「装配时刻」（2026-11-06 立）。
+
+    由头是一次真实事故：我用 pwsh 的 `>` 重定向重新生成它，
+    PS 5.1 的 `>` 默认写 **UTF-16 LE + BOM**（头 8 字节 `ff fe 23 00 20 00 91 4e`），
+    整个文件全废 —— **而没有任何东西报错**。它是装配物，不在任何测试里，
+    直到我想验证新内容、用 python 读它时才撞上 `UnicodeDecodeError: byte 0xff`。
+
+    判据三条：不带 BOM、能按 UTF-8 解码、含「装配时刻」（说明骨架真拼上了）。
+    """
+    p = os.path.join(HERE, "..", "hub", "SELF.md")
+    if not os.path.exists(p):
+        add("SELF.md", False, "不存在（装配器没跑过？）")
+        return
+    try:
+        raw = open(p, "rb").read()
+    except Exception as e:
+        add("SELF.md", False, "读不了：%s" % type(e).__name__)
+        return
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff") or raw[:3] == b"\xef\xbb\xbf":
+        add("SELF.md", False,
+            "带 BOM（头 4 字节 %r）—— 装配通道很可能用了 pwsh 重定向（它写 UTF-16）" % raw[:4])
+        return
+    try:
+        txt = raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        add("SELF.md", False, "不是 UTF-8：%s" % e)
+        return
+    if "装配时刻" not in txt:
+        add("SELF.md", False, "缺「装配时刻」—— 骨架没拼上")
+        return
+    add("SELF.md", True, "%d 字符，UTF-8 无 BOM，含装配时刻" % len(txt))
+
+
 def check_working():
     try:
         out = subprocess.run(
@@ -367,7 +401,7 @@ def main():
     con = connect()
     for fn in (check_tables, check_schema, check_events, check_derived, check_episodes,
                check_evidence, check_decay, check_sleep_log, check_link_integrity,
-               check_meta, check_corrections):
+               check_self_md, check_meta, check_corrections):
         try:
             fn(con)
         except Exception as e:
