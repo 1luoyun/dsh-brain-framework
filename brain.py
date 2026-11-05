@@ -571,7 +571,12 @@ def find_conflicts(rows, min_gap_days=7):
             if a["kind"] != b["kind"] or a["kind"] not in NEWABLE_KINDS:
                 continue
             small = min(len(toks[a["id"]]), len(toks[b["id"]]))
-            need = 3 if small >= 6 else max(2, (small + 1) // 2)
+            # 2026-11-05 提高门槛：原来 `need = 3 if small >= 6 else max(2, (small+1)//2)`，
+            # 实测 9 个候选里 8 个是误报，而且**全都是恰好 shared=3** ——
+            # 说明它们全都卡在最低线上下，只是「都提到小说/都提到配置」这种泛词交叠。
+            # 典型例子：「ch56 改写落地」同时跟 4 条毫不相干的 decision 配成对。
+            # 需要真共 4 个要素才配对；短指纹（<6）依然按一半放，因为它们本来就要素少。
+            need = 4 if small >= 8 else (3 if small >= 6 else max(2, (small + 1) // 2))
             shared = len(toks[a["id"]] & toks[b["id"]])
             if shared < need:
                 continue
