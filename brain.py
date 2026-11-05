@@ -395,6 +395,22 @@ def _idf(n_docs: int, df: int) -> float:
     return math.log(1.0 + (n_docs + 1.0) / (df + 1.0))
 
 
+def _degree_intent(q: str):
+    """查询里有没有「最严重/最重要」这类**程度词**；有就返回门限，否则 None。
+
+    2026-11-05 立。继承时间意图那套：问「我犯过最严重的错误是什么」，
+    返回的第一条是 weight 75 的「凭感觉估时间」，而库里 weight≥90 的
+    42 条事故（openAt 改 startup 98 分、pnpm 清空 node_modules 95 分）
+    一条都没出现 —— 因为「最严重」三个字在词面上什么都撞不上。
+    用户用了程度词，答案就该按权重给。
+    """
+    if any(w in q for w in ("最严重", "最重要", "最重", "最大的", "最惨", "最糟")):
+        return 90.0
+    if any(w in q for w in ("严重", "重要", "致命")):
+        return 80.0
+    return None
+
+
 def _time_window(q: str):
     """查询里的时间词 → 天数窗口；没提时间返回 None。
 
@@ -913,6 +929,7 @@ def cmd_recall(a) -> int:
     # 池子里全是两个月前的章节记录，给它们加权、没加权的，近期事件根本不在池里。
     # 这一步是"补召回"，不是"改排序"：池子有了，后面的 score 才有得排。
     _tw = _time_window(q)
+    _dg = _degree_intent(q)
     if _tw is not None:
         _cutoff = time.strftime("%Y-%m-%d %H:%M:%S",
                                 time.localtime(time.time() - _tw * 86400))
@@ -930,6 +947,24 @@ def cmd_recall(a) -> int:
                 _added += 1
         if _added:
             attempts.append({"cue": "time_window", "days": _tw, "added": _added})
+    # 程度意图补池（2026-11-05）：跟时间窗同一个坑 —— 只加权没用，
+    # weight≥90 的事故往往词面撞不上「犯了什么错误」，压根不在池子里。
+    # 「最严重的」就该把库里最重的那几条摆出来。
+    if _dg is not None:
+        _have = {r["id"] for r in rows}
+        _hi = [dict(x) for x in con.execute(
+            "SELECT e.id,e.ts,e.kind,e.title,e.weight,e.emotion,e.salience,e.hits,e.session"
+            " FROM events e WHERE e.superseded=0 AND e.weight >= ?"
+            " ORDER BY e.weight DESC, e.ts DESC LIMIT ?",
+            (_dg, max(10, a.limit * 2)))]
+        _added2 = 0
+        for x in _hi:
+            if x["id"] not in _have:
+                rows.append(x)
+                _have.add(x["id"])
+                _added2 += 1
+        if _added2:
+            attempts.append({"cue": "degree", "threshold": _dg, "added": _added2})
 
     if rows:
         # 启动效应（priming）：最近 24 小时内发生的事更容易被想起
@@ -997,6 +1032,13 @@ def cmd_recall(a) -> int:
                 if _d is not None and _d <= _win:
                     r["score"] = round(r["score"] * 6.0, 1)
                     r["timefit"] = True
+        # 程度意图（2026-11-05）：问「最严重的」时，高权重的事故该排前面。
+        # 跟时间意图同一个道理 —— 「最严重」在词面上没有落点，只能靠权重读懂。
+        if _dg is not None:
+            for r in rows:
+                if float(r.get("weight") or 50) >= _dg:
+                    r["score"] = round(r["score"] * 2.5, 1)
+                    r["degreefit"] = True
         # 精确标题命中优先：用户把某条标题原样打出来，多半就是在找那条。
         # 2026-11-03 合成评测实测：拿标题当查询，30 条里 **0 条排第一** ——
         # 全被「词面相近但更新、更重」的记录压过去。这不是排序调参问题，
@@ -1037,6 +1079,8 @@ def cmd_recall(a) -> int:
             # timefit —— 只靠这个分不出「今天」和「2.8 天前」，档内又回到按覆盖率排。
             # 用户问「最近」，最近的该在最前面。
             -(_ts_of(r.get("ts")) or 0.0) if r.get("timefit") else 0.0,
+            # 程度意图同理：问「最严重的」，高权重的先上（2026-11-05）
+            0 if r.get("degreefit") else 1,
             # 标题覆盖过半的单独一档：用户原样问一条标题时，答案就是那条
             # 原始记录，而不是正文里整段引用它的新事件（4 号题实测）。
             # 阈值取 0.35 不是 0.5：1 号题的答案 #4535 标题含 openAt/改成/
