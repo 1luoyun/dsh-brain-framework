@@ -127,12 +127,56 @@ def main():
         print("  [%s] %-22s %s" % (mark, r["q"], r["reason"]))
         if a.show and r.get("top"):
             print("        top5=%s" % r["top"])
+    # 意图识别的**误触发**自检（2026-11-05 立）。
+    # 由头：加时间意图那轮只验了「目标查询对不对」，没验「不该触发的会不会触发」，
+    # 结果「最近的备份放在哪」被当成时间查询，返回的全是今天的事。
+    # 写关键词规则时想的永远是命中的情形，漏的永远是不该命中的那些 ——
+    # 所以把它固化成夹具，每次跑 realcheck 都过一遍。
+    bad = check_intents()
+    if bad:
+        print()
+        print("意图误触发/漏触发 %d 处：" % len(bad))
+        for line in bad:
+            print("  XX " + line)
+
     print()
     print("  命中 %d/%d（%.0f%%）" % (passed, len(scored), 100.0 * passed / max(1, len(scored))))
     print()
     print("  提醒：这把尺子跟 eval.py 测的不是一回事 —— eval 测「能不能找回那条记录」，")
     print("  这里测「自然说法能不能够到答案」。两个数字要一起看，别拿一个替代另一个。")
-    return 0 if passed == len(scored) else 1
+    return 0 if (passed == len(scored) and not bad) else 1
+
+
+# 每个用例：查询、期望的 time_window、期望的 degree_intent 门限。
+# None 表示「不该触发」—— **这一列才是重点**，前两轮出问题都在这里。
+INTENT_CASES = [
+    ("最近的备份放在哪", None, None),      # 问东西在哪，不是问时间
+    ("最后一个文件", None, None),          # 「最后」不是程度
+    ("最好用的搜索方式", None, None),
+    ("最近做了什么", 3.0, None),
+    ("今天都干了什么", 1.0, None),
+    ("昨天改了什么配置", 2.0, None),
+    ("我犯过最严重的错误", None, 90.0),
+    ("最重要的教训", None, 90.0),
+]
+
+
+def check_intents():
+    """验 brain 里那两个意图识别：该触发的触发、不该触发的别触发。"""
+    sys.path.insert(0, HERE)
+    try:
+        import brain
+    except Exception as e:
+        return ["import brain 失败：%s" % type(e).__name__]
+    bad = []
+    for q, want_t, want_d in INTENT_CASES:
+        got_t = brain._time_window(q)
+        got_d = brain._degree_intent(q)
+        if got_t != want_t:
+            bad.append("%s  time_window 期望 %s 实际 %s" % (q, want_t, got_t))
+        if got_d != want_d:
+            bad.append("%s  degree_intent 期望 %s 实际 %s" % (q, want_d, got_d))
+    return bad
 
 
 if __name__ == "__main__":
