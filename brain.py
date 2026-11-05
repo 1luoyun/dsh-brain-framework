@@ -1037,9 +1037,11 @@ def cmd_recall(a) -> int:
     # 只给前 3 条加，理由与 events.hits 相同：一次返回十几条，真会被看的就前几条。
     # 评测必须带 --no-count，否则同一批事实会被反复刷满（events.hits 已经踩过这个坑）。
     if not getattr(a, "no_count", False) and facts:
+        # 同时记「什么时候用的」：只有次数没有时间，回落机制无从判断 ——
+        # events.hits 那边踩过同一个坑（2026-11-03 的教训）。
         con.executemany(
-            "UPDATE facts SET activation=MIN(1.0, activation+0.08) WHERE id=?",
-            [(f["id"],) for f in facts[:3]])
+            "UPDATE facts SET activation=MIN(1.0, activation+0.08), last_used_at=? WHERE id=?",
+            [(now(), f["id"]) for f in facts[:3]])
         con.commit()
 
     # found 不能只看「有没有返回东西」：中文 2-gram 的 OR 总能撞上几条无关记录，
@@ -1955,6 +1957,25 @@ def cmd_forget(a) -> int:
                         (now(), p["id"], p["weight"], p["new_weight"], "ebbinghaus"))
         if dorm:
             con.executemany("UPDATE events SET dormant=1 WHERE id=?", [(i,) for i in dorm])
+        # ── 事实的激活回落（2026-11-05 补）──
+        # activation 原来只升不降（被 recall 带出就 +0.08，封顶 1.0），跑久了会全部满值，
+        # 就失去「哪条才是真常用」的区分度 —— 等于把成熟期白做了。
+        # 生物上长期不用的突触强度会回落，这里用同一规则：超过 30 天没被取用就往下走，
+        # 下限 0.3（不会退回沉默期，那会把它重新变成「查不到的新事实」）。
+        # 步长 0.01 而不是 0.05：这条路径每 6 小时跑一次，0.05 会让一条事实
+        # 在四天内从满值掉到底，太急。
+        stale = con.execute(
+            "SELECT id, activation, COALESCE(last_used_at, created_at) AS lu FROM facts"
+            " WHERE activation > 0.5 AND contradicted_by IS NULL").fetchall()
+        n_act_dec = 0
+        for _id, _act, _lu in stale:
+            try:
+                _d = (time.time() - time.mktime(time.strptime(_lu, "%Y-%m-%d %H:%M:%S"))) / 86400.0
+            except Exception:
+                continue
+            if _d > 30:
+                con.execute("UPDATE facts SET activation=MAX(0.3, activation-0.01) WHERE id=?", (_id,))
+                n_act_dec += 1
             con.execute("INSERT INTO sleep_log (ts,phase,events_in,facts_out,proc_out,merged,note)"
                         " VALUES (?,?,?,?,?,?,?)",
                         (now(), "dormant", 0, 0, 0, len(dorm),
