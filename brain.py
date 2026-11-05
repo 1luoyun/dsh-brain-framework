@@ -1056,6 +1056,7 @@ def cmd_recall(a) -> int:
     # 程度意图补池（2026-11-05）：跟时间窗同一个坑 —— 只加权没用，
     # weight≥90 的事故往往词面撞不上「犯了什么错误」，压根不在池子里。
     # 「最严重的」就该把库里最重的那几条摆出来。
+    _dg_added = 0
     if _dg is not None:
         _have = {r["id"] for r in rows}
         _hi = [dict(x) for x in con.execute(
@@ -1070,6 +1071,7 @@ def cmd_recall(a) -> int:
                 rows.append(x)
                 _have.add(x["id"])
                 _added2 += 1
+        _dg_added = _added2
         if _added2:
             attempts.append({"cue": "degree", "threshold": _dg, "added": _added2})
     # 类型意图补池（2026-11-05）：问「我学过哪些教训」原本**返回完全空** ——
@@ -1423,6 +1425,23 @@ def cmd_recall(a) -> int:
     # 未结项命中（2026-11-05）：问「我说过要做什么还没做」，答案就在 open_items 里。
     # 不加这条的话，verdict 会说 no_match —— 明明有 3 条摆在那儿。
     open_hit = bool(_opens)
+    # 程度意图命中（2026-11-06 补）。由头：问「我犯过最严重的错误是什么」返回
+    # `no_match_by_these_cues` 且 hits 是 0 条 —— 补池明明把 weight>=90 的事故
+    # 拉进了池子（实测 43 条在库里），但因为词面撞不上，top_cov 不够格，
+    # 判定走 `elif total:` 分支时 `rows = []` **把补进来的全清空了**。
+    # 用户用了「最严重的」这种词，本来就不是在找一个词面相似的事，而是在要「最重的那批」。
+    # 判据跟 kind_hit 同源：去掉程度词和虚字后，剩余实义部分够短（<6 字）才算纯意图式查询。
+    # **2026-11-06 修**：原来写的是 `_dg_added > 0`（只数「新补进来的」），
+    # 但高权重的那些事件本来就在召回池里时 `_added2` 就是 0 —— 于是判成「没命中」，
+    # 明明池里躺着一堆 weight>=90 的事故（实测「最大的问题」cues=[] 就是这条惹的）。
+    # 正确的判据是「**池里有没有够门槛的东西**」，不是「这次新补了几条」。
+    _dg_words = ("最严重", "最重要", "最重", "最大的", "最惨", "最糟", "严重", "重要", "致命")
+    _dq_rest = q
+    for _w in _dg_words:
+        _dq_rest = _dq_rest.replace(_w, "")
+    _dq_rest = re.sub(r"[我你他她它的了吗呢啊吧？，,。\s什么啥哪]", "", _dq_rest)
+    degree_hit = (_dg is not None and len(_dq_rest) < 6
+                  and any(float(r.get("weight") or 0) >= _dg for r in rows))
     # 程序层也要够格（2026-11-05）。单条命中本身不算 —— 「今天发生过量子纠缠香蕉飞船吗」
     # 曾凭 2-gram 撞上 procedure 8 的 steps 被判 found。但直接要求「>=2 个线索」又太严：
     # eval #32「角色突然自己讲起故事」原本靠程序层命中，收紧后 hit@10 掉到 48。
@@ -1430,7 +1449,8 @@ def cmd_recall(a) -> int:
     strong_procs = any(v["n"] >= 2 for v in proc_cues.values())
     proc_ok = bool(procs) and (top_cov >= 0.50 or any_strong)
     if ((top_cov >= 0.55 and top_nhit >= 2) or vec_top >= 0.60 or any_strong
-            or strong_facts or strong_procs or proc_ok or kind_hit or open_hit):
+            or strong_facts or strong_procs or proc_ok or kind_hit or open_hit
+            or degree_hit):
         verdict = "found"
         note = ""
     elif total:
