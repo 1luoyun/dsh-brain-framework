@@ -35,6 +35,10 @@ DB = os.path.join(HERE, "brain.db")
 K_RECENT = 3        # 主题记忆保留最近几条
 OVERLAP_MIN = 2     # 长标题要求的最小共享元素数（短标题自适应降到 1）
 MAX_GAP = 360       # 同一段内相邻事件最长间隔（分钟），6 小时
+# 2026-11-06 试：一段最多多少条。由头是 size_buckets 里 20+ 的段有 29 个，
+# 最大一个 218 条（2026-10-10 连续工作 3 小时）—— 那种段的摘要必然丢细节。
+# 段的意义是「一段连续经历」，不是「一整天」。
+MAX_EVENTS = 60
 STOP_RATIO = 0.10   # 出现在 >10% 事件里的元素不带区分度，不算主题（实测"写文/正文/章节"各占 71%）
 MIN_MERGE = 2       # 少于这个条数的段，尝试并入相邻段（单调流水不该独占一段）
 
@@ -106,8 +110,10 @@ def segment(rows, stop):
         inter = tok & theme
         need = 1 if len(tok) <= 2 else OVERLAP_MIN
         overlap = len(inter) >= need
+        # 2026-11-06 试加条数闸门
+        too_long = cur is not None and len(cur["rows"]) >= MAX_EVENTS
 
-        if cur is None or not (gap_ok and same_day and overlap):
+        if cur is None or too_long or not (gap_ok and same_day and overlap):
             cur = {"recent": [], "rows": []}
             segs.append(cur)
 
@@ -133,6 +139,12 @@ def fold_singletons(segs, rows_by_id):
             out.append(s)
             continue
         prev = out[-1]
+        # 2026-11-06 修：原来合并**没有长度上限**，于是「往上一段接一条」会被反复执行，
+        # 滚雪球到几百条（实测 max 218）。加了 MAX_EVENTS 闸门之后 segment 那边切到
+        # 27 条一段，但 fold 又给合并回去了 —— 所以闸门必须也在这一层。
+        if len(prev["rows"]) + len(s["rows"]) > MAX_EVENTS:
+            out.append(s)
+            continue
         a = parse_ts(prev["rows"][-1]["ts"])
         b = parse_ts(s["rows"][0]["ts"])
         if a and b and (b - a).total_seconds() / 60.0 <= 60:
