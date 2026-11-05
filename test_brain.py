@@ -92,6 +92,21 @@ def main():
     ok("否定题返回 no_match", r2 and r2["verdict"] == "no_match_by_these_cues",
        "verdict=%s" % (r2 or {}).get("verdict"))
 
+    print("\n--- 未结项层（open_items 也要能被 recall 查到）---")
+    # 2026-11-05 立。由头：五个数据层（events/facts/procedures/constraints/open_items）
+    # 前四个都进了 recall，只有 open_items 漏了 —— 问「我说过要做什么还没做」返回 no_match，
+    # 而答案就躺在表里。这条断言就是防它再被漏掉。
+    o1 = js(["open", "--what", "测试用未结项：验证 recall 能查到它"])
+    ok("open 写入", o1 and o1.get("open_item_id"), "id=%s" % (o1 or {}).get("open_item_id"))
+    r3 = js(["recall", "我说过要做什么还没做", "--limit", "5", "--no-vector"])
+    ok("recall 能查到未结项",
+       r3 and (r3.get("open_items") or []), "n=%d" % len((r3 or {}).get("open_items") or []))
+    ok("有未结项时 verdict 是 found", r3 and r3.get("verdict") == "found",
+       "verdict=%s" % (r3 or {}).get("verdict"))
+    r4 = js(["recall", "把配置改坏了", "--limit", "5", "--no-vector"])
+    ok("不带待办词时不塞未结项", r4 and not (r4.get("open_items") or []),
+       "n=%d" % len((r4 or {}).get("open_items") or []))
+
     print("\n--- 情景分段 ---")
     con = sqlite3.connect(os.path.join(SAND, "brain.db"))
     n_ep = con.execute("SELECT count(*) FROM episodes").fetchone()[0]
