@@ -23,6 +23,11 @@ import os
 import re
 import sys
 
+# Windows 控制台是 GBK，⚠ 这类字形没有 → print 当场 UnicodeEncodeError，
+# 而崩的时候清单已经算完、还没打出来。2026-11-07 实测就在第 99 行崩了。
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 TARGET = os.path.join(HERE, "brain.py")
 

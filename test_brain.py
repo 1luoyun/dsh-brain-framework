@@ -185,7 +185,10 @@ def main():
     con.execute("UPDATE events SET ts=datetime('now','localtime','-60 days')")
     con.commit()
     con.close()
-    f = js(["forget"])
+    # 2026-11-07：forget 的默认改成了 dry-run（治 6759 —— 当时以为它是只出计划，
+    # 实际默认真跑，一次降了 684 条权重）。要验「真降了」必须显式 --apply，
+    # 否则这里查到的是原值，断言就成了在测 dry-run 的默认值本身。
+    f = js(["forget", "--apply"])
     ok("forget 有候选", f and f["candidates"] >= 1, "candidates=%s" % (f or {}).get("candidates"))
     con = sqlite3.connect(os.path.join(SAND, "brain.db"))
     w = con.execute("SELECT weight FROM events WHERE kind='done'").fetchone()

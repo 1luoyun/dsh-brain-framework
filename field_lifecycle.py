@@ -129,7 +129,8 @@ def main():
 
     report = []
     for table, columns in cols.items():
-        w = written_columns(sql, table)
+        # 2026-11-07：这里原来有 `w = written_columns(sql, table)`，但紧接着 L140-151
+        # 用同一套写块**又判了一遍**（written 变量），w 从产生起就没被读过 —— ruff F841。
         for c in columns:
             if c.lower() == "id":
                 continue  # 主键自增，本来就不需要显式写（首跑没跳过，八张表的 id 全被误报）

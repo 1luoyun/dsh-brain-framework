@@ -54,7 +54,10 @@ ALLOWED_FILES = {".gitignore", "README.md", "health.py", "eval.py", "eval_cases.
                  "assoc.py",           # 语义近邻边生成器
                  "field_lifecycle.py",  # 静态查「只读不写」字段
                  "realcheck.py",        # 真实场景验收（跟 eval 并列的另一把尺子）
-                 "check_comment_claims.py"  # 扫注释里宣称了具体机制的地方（待核清单）
+                 "check_comment_claims.py",  # 扫注释里宣称了具体机制的地方（待核清单）
+                 # 2026-11-07 第四次（前三次见上）：加 brain_audit.py 又忘了登记，
+                 # 体检当场报目录脏。**这条闸门每次都有效**，问题在我每次都忘。
+                 "brain_audit.py"       # schema 与实现对账（声明的表/命令有没有真的通路）
                  }
 
 RESULTS = []
@@ -77,6 +80,19 @@ def check_tables(con):
     miss_r = [t for t in RESERVED_TABLES if t not in have]
     add("表齐全", not miss and not miss_r,
         "主体缺 %s；预留缺 %s" % (miss or "无", miss_r or "无"))
+
+
+def _has_table(con, name):
+    """可选层（向量表由 embed.py 建）不存在时，检查要跳过而不是崩。
+
+    2026-11-07 实测：干净克隆按 schema.sql 建库后，`event_emb` 根本没有
+    （它是向量层的表，只有跑过 embed.py --build 才存在）——
+    于是体检里两处直接 `no such table: event_emb`，报的是**「检查本身出错」**，
+    看着像数据坏了，实际是「这一层还没装」。
+    """
+    return con.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (name,)).fetchone() is not None
 
 
 def check_schema(con):
@@ -104,6 +120,9 @@ def check_derived(con):
     —— 没人发现，因为没有任何检查在看这件事。作废只改 events，派生视图不会自动跟着清。
     这里只报「孤儿向量」（属于作废事件的），不做修复；修复走 `brain.py purge-derived --apply`。
     """
+    if not _has_table(con, "event_emb"):
+        add("派生一致性", True, "向量层未装（event_emb 不存在），跳过")
+        return
     n = con.execute(
         "SELECT count(*) FROM event_emb WHERE id IN"
         " (SELECT id FROM events WHERE superseded=1)").fetchone()[0]
@@ -232,10 +251,12 @@ def check_link_integrity(con):
         " OR EXISTS (SELECT 1 FROM events e WHERE e.id = l.a AND e.superseded = 1)"
         " OR EXISTS (SELECT 1 FROM events e WHERE e.id = l.b AND e.superseded = 1)"
     ).fetchone()[0]
-    bad_emb = con.execute(
-        "SELECT COUNT(*) FROM event_emb m WHERE EXISTS"
-        " (SELECT 1 FROM events e WHERE e.id = m.id AND e.superseded = 1)"
-    ).fetchone()[0]
+    bad_emb = 0
+    if _has_table(con, "event_emb"):
+        bad_emb = con.execute(
+            "SELECT COUNT(*) FROM event_emb m WHERE EXISTS"
+            " (SELECT 1 FROM events e WHERE e.id = m.id AND e.superseded = 1)"
+        ).fetchone()[0]
     # 2026-11-05 补：`facts.evidence` 和 `episodes.event_ids` 也是事件 id 的引用表，
     # 之前两项没查它们。实测都是干净的（evidence 空 0 条、456 段情景零悬空），
     # 但这两张表是 consolidate / episode 每次重建时写的 —— 最可能出问题的正是重建。
@@ -263,7 +284,8 @@ def check_link_integrity(con):
             % (bad_links, bad_emb, bad_ev, bad_ep))
         return
     nl = con.execute("SELECT COUNT(*) FROM links").fetchone()[0]
-    nm = con.execute("SELECT COUNT(*) FROM event_emb").fetchone()[0]
+    nm = (con.execute("SELECT COUNT(*) FROM event_emb").fetchone()[0]
+          if _has_table(con, "event_emb") else 0)
     nf = con.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
     np_ = con.execute("SELECT COUNT(*) FROM episodes").fetchone()[0]
     add("引用完整性", True,

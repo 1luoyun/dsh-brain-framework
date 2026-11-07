@@ -342,6 +342,23 @@ PROCS = [
         ),
         domain="dsh",
     ),
+    dict(
+        name="跟烬灵打交道（8766 那个小东西）",
+        when_to_use="要看她的状态/最近在想什么、让她评文风、给她带话、她挂了要拉起",
+        steps=(
+            "1) 先跑 `python E:\\deepseek\\tools\\烬灵桥.py status` —— 8766 不通它会直说，别自己以为她在跑\n"
+            "2) 她最近在想什么：`... 烬灵桥.py thoughts --n 20 --out 记录\\tmp\\kiri.json` 再 read 那个文件"
+            "（终端是 GBK，中文直接打会烂；她的念头 kind 早改叫 reverie，不是旧文档里的 thought）\n"
+            "3) 完整回复在 /api/status 的 trace[].reply —— events.jsonl 里的 thought/say 可能是截断版\n"
+            "4) 带话：`... 烬灵桥.py say --text 「一句」 --as 主笔`（2026-09-11 由主理人改名，旧名仍能用但会分库）；"
+            "不传 as 就是用户本人、回复会推他 QQ。一次只带一句，没让带就别发\n"
+            "5) 拉起/重启一律走 `python E:\\deepseek\\智慧生命\\重启烬灵.py`（它自带快照→停→起→核对三行→退出码）；"
+            "⚠ 不是 tools\\kiri-restart.py，那个是底层端口闸门，不带 --qq 也不带快照。"
+            "手工拉起必须带 --qq（漏了 QQ 桥静默断），且别用 stdout=DEVNULL（端口照听、日志不写＝假成功）\n"
+            "6) 重启后核对三行：KIRI_QQ=1 → QQ 桥放行 / [app] QQ桥(NapCat)已启动 / [qq_bridge] [OK] 已连接"
+        ),
+        domain="runtime",
+    ),
 ]
 
 

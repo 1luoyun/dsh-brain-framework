@@ -136,6 +136,7 @@ python brain.py brief --about "要改线上配置了"
 | `review` | 定期回看：最近 N 天哪些事改变了我 |
 | `source` | 按时间回原始对话取证 |
 | `backup` | 在线快照（不锁库，自带轮转） |
+| `proc` / `proc-add` | 查 / 记一套步骤（这类事该怎么做、错在哪一步） |
 
 派生视图（需要时单独跑）：
 
@@ -184,6 +185,8 @@ python test_brain.py    # 隔离沙盘跑完整链路：写入 / 检索 / 分段
 python eval.py          # 检索评测（题集见 examples/eval_cases.example.json）
 python health.py        # 体检（表层 + 数据 + 代码自检）
 python health.py --selftest   # 造坏样本，验证体检真的会红
+python brain_audit.py   # 对账：schema 里画的表，代码里有没有通往它的路
+python brain_audit.py --selftest
 ```
 
 `test_brain.py` **绝不碰你的真库**：它在脚本同级建 `.test-sand/`，跑完删掉。
@@ -209,7 +212,7 @@ python health.py --selftest   # 造坏样本，验证体检真的会红
 
 ## 版本
 
-当前 **v0.2.0**（开发期，API 还会变）。改动记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前 **v0.3.0**（开发期，API 还会变）。改动记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 版本号遵循语义化版本：`主.次.补丁` —— 不兼容的改动加主版本，向下兼容的新功能加次版本，修 bug 加补丁。
 

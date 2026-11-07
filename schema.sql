@@ -228,3 +228,50 @@ CREATE TABLE IF NOT EXISTS distill_log (
   new_chars INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_distill_ev ON distill_log(event_id);
+
+-- 睡眠 / 衰减汇总（2026-11-07 补）：distill 与 forget 各写一行，记「这一轮动了多少」。
+-- 由头很具体：这张表 code 一直在用（brain.py 有两处 INSERT），但 schema.sql 从来没建过 ——
+-- 用 schema.sql 新建的库跑到 distill --apply 或 forget --apply，当场
+-- `no such table: sleep_log`。跟 2026-11-03 那次 fingerprint 漏进 schema.sql 是同一个病：
+-- 「改代码」和「改 schema.sql」必须同批做，否则老库看不出问题、新库直接跑不起来。
+CREATE TABLE IF NOT EXISTS sleep_log (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts        TEXT    NOT NULL,
+  phase     TEXT,
+  events_in INTEGER,
+  facts_out INTEGER,
+  proc_out  INTEGER,
+  merged    INTEGER,
+  note      TEXT
+);
+
+-- 下面三张是**预留表**：health.py 的 RESERVED_TABLES 要求它们存在，但代码还没接上
+-- （brain_audit.py 会把它们列为「空表 + 无写入」并记进已知清单，附成因）。
+-- 2026-11-07 补：schema.sql 一直缺这三张的建表语句，用 schema.sql 新建的库体检会报
+-- 「预留缺」，而拿老库看是正常的 —— 又是「改代码 / 改库」与「改 schema.sql」不同批的老毛病。
+CREATE TABLE IF NOT EXISTS arousal (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts       TEXT NOT NULL,
+  level    REAL,           -- 0-1 警觉度
+  load     REAL,           -- 0-1 负载
+  err_rate REAL,
+  note     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS sensory_buffer (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts      TEXT NOT NULL,
+  channel TEXT,            -- vision / audio / touch / text
+  raw     TEXT,
+  ttl_sec INTEGER DEFAULT 3
+);
+
+CREATE TABLE IF NOT EXISTS motor_trace (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts       TEXT NOT NULL,
+  action   TEXT,           -- 动作名
+  target   TEXT,
+  seq_no   INTEGER,        -- 时序
+  ok       INTEGER,
+  err_ms   INTEGER         -- 时序误差（将来有身体时用得上）
+);

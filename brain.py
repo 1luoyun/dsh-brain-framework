@@ -28,7 +28,7 @@
   open --what W [--due D]           记一条未结
   close ID                          结掉一条未结
   stats                             看一眼库的体量
-  forget [--dry-run]                衰减（带留痕）
+  forget [--apply]                  衰减（带留痕）；**默认只出计划，不落库**
 """
 
 import argparse
@@ -450,6 +450,57 @@ def _grams(q: str):
     return g[:8]
 
 
+# 「不是 A，是 B」/「并非 A 而是 B」这类否定框架。
+# group("keep") 是后半截 —— 真正的检索意图在后面。
+_NEG_FRAME = re.compile(
+    r"(?:不是|并非|别找|不要找|不是找)"
+    r"(?P<neg>[^，,。；;！!？?\s]{1,16})(?:那种|这样的|那一类)?[，,]?\s*"
+    r"(?:而)?(?:是|指的是?|要的是)(?P<keep>.+)$")
+
+# 句首祈使的「别找 A，B」—— 后半截不一定是「是」开头（「别找旧的，找新版本」）。
+# 要求**逗号分隔**且否定词在句首，否则「不是删除」这种没有后半截的会被误切。
+_NEG_FRAME_HEAD = re.compile(
+    r"^(?:别找|不要找|别用|不要用|不是找|别看)"
+    r"(?P<neg>[^，,。；;！!？?\s]{1,16})[，,]\s*(?P<keep>.+)$")
+
+_TAIL_PARTICLES = "吗呢吧啊呀哦嘛哈了"
+
+
+def _prep_query(q: str) -> str:
+    """查询预处理：切掉否定框架里「被否定的那一段」，而不是给它降权（2026-11-06 立）。
+
+    【为什么有它】open_item #4。问「不是删除那种，是改配置」时，结果里全是删除相关
+    的事件 —— 因为分词把「删除」和「配置」当同权实义词，2-gram 还会把「不是」「那种」
+    也切进候选池。
+
+    【为什么不是降权，也不是抽词】
+    两条路都试过了：抽词**是对的但无效**（open_item #3 的负面证据），
+    给否定词降权只治标 —— 真凶是长句拆成 2-gram 之后的碎片噪声，
+    降权的那个词走了，它切出来的碎片还在。
+    这里做的是**整段切除**：认出句式之后把「不是 A」那一段连同否定词一起拿掉，
+    只留后半截当查询。
+
+    【只在句子里真有后半截时才切】光说「不是删除」的，不动 ——
+    那时候「删除」仍可能是他要找的东西（"不是删除的那种，那是什么"）。
+
+    【开关】BRAIN_QUERY_PREP=0 可关，专给 A/B 用。**默认开**必须拿 eval 前后对比说话。
+    """
+    if os.environ.get("BRAIN_QUERY_PREP", "1") == "0":
+        return q
+    m = _NEG_FRAME.search(q) or _NEG_FRAME_HEAD.search(q)
+    if m:
+        keep = (m.group("keep") or "").strip()
+        if keep:
+            out = (q[:m.start()] + keep).strip(" ，,。；;")
+            if out:
+                q = out
+    # 句尾语气词：它们进 2-gram 只会制造碎片
+    stripped = q.rstrip(_TAIL_PARTICLES).strip()
+    if stripped:
+        q = stripped
+    return q
+
+
 def _idf(n_docs: int, df: int) -> float:
     """平滑 IDF：词越常见权重越低。
 
@@ -789,6 +840,10 @@ def cmd_recall(a) -> int:
     q = a.query.strip()
     if not q:
         emit({"ok": False, "error": "query 不能为空"}); return 2
+    # 2026-11-06: 否定框架预处理（切掉「不是 A，是 B」里的 A）。原文保留在 raw_q 里，
+    # 输出里如实报「这条查询被预处理成了什么」—— 免得调参时把功劳记错。
+    raw_q = q
+    q = _prep_query(q)
     con = connect(); ensure_schema(con)
     # 休眠记录默认不参与检索：想不起来 ≠ 被删除。
     # 库还在，`--include-dormant` 能唤醒 —— 这是「遗忘」和「删除」的分界：
@@ -1506,6 +1561,9 @@ def cmd_recall(a) -> int:
         keep = ("id", "ts", "kind", "title", "weight", "snip")
         rows = [{k: r[k] for k in keep if k in r} for r in rows]
     emit({"ok": True, "query": q, "verdict": verdict, "note": note,
+          # 2026-11-06: 预处理改过查询时把原句带出来 —— 调检索参数时最容易记错的就是
+          # "到底是哪一版查询命中的"。没改过就是 null，不占地方。
+          "prepped_from": raw_q if raw_q != q else None,
           "tried": attempts, "count": len(rows),
           "episodes": episodes, "assoc": assoc,
           "hits": rows, "facts": facts, "procedures": procs,
@@ -1800,7 +1858,7 @@ def cmd_meta_set(a) -> int:
 def cmd_backup(a) -> int:
     """在线快照 brain.db —— 用 sqlite 的 backup API，不锁库、不打断使用。
 
-    为什么需要它：brain 目录在 <workspace> 仓里，但 brain.db 故意不入库
+    为什么需要它：brain 目录在 E:\\deepseek 仓里，但 brain.db 故意不入库
     （34 MB 二进制、每次改都变，git 存不划算）。既然不靠 git，就必须有
     别的回退点 —— 否则库一坏，几千条记忆全没了。这不是优化，是底线。
     """
@@ -2302,9 +2360,18 @@ def cmd_forget(a) -> int:
         # 原来门槛是 hits>=2 + 180 天，2026-11-05 实测太松：eval 每跑一轮就给命中的
         # 事件 +1 hits，跑十几次评测之后 **1288 条（37%）都成了「用过」**，
         # 分档降权一条都触发不了。改成 hits>=3 + 90 天，才叫「真被依赖」。
+        #
+        # 2026-11-06 再收紧（用户「那就收紧调整一下」）：**必须真有 last_hit_at 才算**。
+        # 由头：实测 1398 条 hits>0 里只有 15 条有 last_hit_at —— 其余 1338 条的 hits
+        # 是 last_hit_at 字段加入之前的历史批量值，**不是真实召回**。证据是写点只有一处：
+        # 代码里那句 UPDATE 同时写 hits 和 last_hit_at，所以「有 hits 无时间戳」
+        # 在当前代码下根本不可能产生。
+        # 旧判据对没有时间戳的记录用事件 ts 代理，而 9 月的事件距今才 60 多天，
+        # 全落在 90 天窗口内 ⇒ 1260 条被「用过」保护着，遗忘机制等于失效。
+        # 收紧后只保护 7 条；会让 82 条 9 月的流水账降档（25→15，保底 1，写 decay_log 可回滚）。
         hits = r["hits"] or 0
         if hits >= 3:
-            if _recently_used(r, 90):
+            if r["last_hit_at"] and _recently_used(r, 90):
                 protected["used"] += 1
                 continue
             protected["stale_used"] += 1
@@ -2361,7 +2428,7 @@ def cmd_forget(a) -> int:
         plan.append({"id": r["id"], "title": r["title"][:40], "weight": r["weight"],
                      "age_days": int(age), "drop": drop,
                      "new_weight": max(1, r["weight"] - drop)})
-    if not a.dry_run:
+    if a.apply:
         for p in plan:
             con.execute("UPDATE events SET weight=? WHERE id=?", (p["new_weight"], p["id"]))
             con.execute("INSERT INTO decay_log (ts,event_id,old_w,new_w,reason) VALUES (?,?,?,?,?)",
@@ -2396,7 +2463,7 @@ def cmd_forget(a) -> int:
                 n_act_dec += 1
         con.commit()
     con.close()
-    emit({"ok": True, "dry_run": bool(a.dry_run), "candidates": len(plan),
+    emit({"ok": True, "dry_run": not a.apply, "candidates": len(plan),
           "dormant_marked": len(dorm),
           "total_events": len(rows), "protected": protected,
           "next_unlock": (time.strftime("%Y-%m-%d %H:%M", time.localtime(next_unlock))
@@ -2445,6 +2512,44 @@ def cmd_proc(a) -> int:
     # 最该重写的排前面。从没用过的（ok=fail=0）不算坏 —— 那叫「还没验过」
     rows.sort(key=lambda r: -((r["fail_count"] or 0) - (r["success_count"] or 0)))
     emit({"ok": True, "count": len(rows), "procedures": rows})
+    return 0
+
+
+def cmd_proc_add(a) -> int:
+    """记一套新步骤，写进 procedures。
+
+    为什么补这个入口：`proc` 的 help 一直写着「记一套步骤」，但实现里只有
+    查询和查看两条分支 —— procedures 表**从来没有写入路径**，那 10 条全是
+    历史手工数据。后果很具体：2026-11-07 晚问 brief「取 Hunter 指纹数据并
+    提交补天表单」，procedures 层给不出任何东西，而前一晚踩通的那条提交链路
+    （考核 → 表单 → 测试范围接口）只躺在 events 里没被提炼。记忆的价值不在
+    记了多少事，在下次能不能照着走。
+
+    同名默认拒绝（--replace 才覆盖），理由是异步写比静默改坏更难查。
+    """
+    name = (a.name or "").strip()
+    if not name:
+        emit({"ok": False, "error": "name 不能为空"}); return 2
+    steps = (a.steps or "").strip()
+    if not steps:
+        emit({"ok": False, "error": "steps 不能为空"}); return 2
+    con = connect(); ensure_schema(con)
+    dup = con.execute("SELECT id FROM procedures WHERE name=?", (name,)).fetchone()
+    if dup and not a.replace:
+        con.close()
+        emit({"ok": False, "error": "已有同名步骤，加 --replace 才覆盖", "id": dup[0]})
+        return 1
+    if dup:
+        con.execute("DELETE FROM procedures WHERE name=?", (name,))
+    cur = con.execute(
+        "INSERT INTO procedures (name,when_to_use,steps,evidence,created_at,domain)"
+        " VALUES (?,?,?,?,?,?)",
+        (name, (a.when or "").strip(), steps, (a.evidence or "").strip(),
+         now(), (a.domain or "tech")))
+    con.commit()
+    pid = cur.lastrowid
+    con.close()
+    emit({"ok": True, "id": pid, "name": name})
     return 0
 
 
@@ -2903,6 +3008,42 @@ def cmd_brief(a) -> int:
     for r in con.execute("SELECT title, body FROM events WHERE superseded=0"):
         if cov_of((r["title"] or "") + " " + (r["body"] or "")) >= 0.25:
             n_ev += 1
+
+    # 2026-11-07 补「实验台账」：brief 是关键词匹配，而我描述实验用的词跟历史结论
+    # 往往不重叠 —— 实测 `--about "把 user 事件用低权重加进 recall 召回池"` 完全查不到
+    # 「干扰限流试了两版都负收益已回滚」「编码器天花板，三条解法都被实测挡着」。
+    # 于是同一天三次差点重做已验证失败的实验（user 降权 / #50 解法 / 差点改 recall）。
+    # ⇒ 这类记录（试过、失败、回滚、天花板、挡着）跟关键词无关，**无条件带出来**：
+    #   看一眼标题就知道「这条路走过」，这是 brief 最该做而没做的那件事。
+    exps = []
+    try:
+        for r in con.execute(
+                "SELECT id, ts, title FROM events"
+                " WHERE superseded=0 AND kind='learn'"
+                "   AND (title LIKE ? OR title LIKE ? OR title LIKE ?"
+                "        OR title LIKE ? OR title LIKE ? OR title LIKE ?)"
+                " ORDER BY ts DESC LIMIT 12",
+                ("%试%", "%负收益%", "%回滚%", "%失败%", "%天花板%", "%挡着%")):
+            exps.append({"id": r["id"], "ts": r["ts"], "title": (r["title"] or "")[:90]})
+    except sqlite3.Error:
+        exps = []
+
+    # 2026-11-07 补「未结项」：brief 是开工前的入口，而「我自己留的欠账」正是开工时
+    # 最该先看的东西。实测 `--about "取 Hunter 指纹数据并提交补天表单"` 时，
+    # open_items 里明明躺着一条一模一样的待办（连"两格是故意清空的"都写在 note 里），
+    # 简报一句没提，反倒给了「删东西出过 8 次事故」这种无关教训 —— 那等于每天开工
+    # 都从零想一遍，昨天留的接力棒自己看不见。
+    # 跟 experiments 同源理由：**无条件带出**。未结项本来就只有个位数，漏一条的代价
+    # 是把做过一半的事重做一遍，多一条只是多看一眼。
+    try:
+        opens = [dict(r) for r in con.execute(
+            "SELECT id,what,created_at,due,note FROM open_items"
+            " WHERE status='open' ORDER BY id DESC")]
+    except sqlite3.Error:
+        opens = []
+    # 跟我这次要做的事词面撞得上的先出；全都撞不上就按新近排（先看不新鲜的）
+    rel_opens = sorted(
+        opens, key=lambda o: -cov_of((o["what"] or "") + " " + (o["note"] or "")))
     con.close()
 
     hard = [c for c in rel_cons if c["severity"] == "hard"]
@@ -2916,16 +3057,22 @@ def cmd_brief(a) -> int:
         risk = "low"
 
     parts = []
+    # 未结项排第一：它是「这件事我昨天做到哪了」，比任何教训都该先看到
+    if rel_opens:
+        parts.append("%d 条未结项（你自己留的欠账，先看这个）" % len(rel_opens))
     if hard:
         parts.append("%d 条硬禁令相关" % len(hard))
     if rel_procs:
-        parts.append("%d 套现成步骤" % len(rel_procs))
+        # 带上取全文的办法：只报「有几套步骤」而不说去哪看，等于把货摆门口锁起来
+        parts.append("%d 套现成步骤（全文用 proc --id N 查）" % len(rel_procs))
     if rel_facts:
         parts.append("%d 条已提炼的教训" % len(rel_facts))
     if rel_acc:
         parts.append("%d 起同类事故（最重一次 %d 分）" % (len(rel_acc), rel_acc[0]["weight"]))
     if rel_user:
         parts.append("%d 条他说过的话" % len(rel_user))
+    if exps:
+        parts.append("%d 条「试过/失败/回滚」的实验结论（词面未必撞得上，但先看一眼）" % len(exps))
     if parts:
         advice = "；".join(parts) + "。"
     elif n_ev == 0:
@@ -2947,7 +3094,8 @@ def cmd_brief(a) -> int:
           "cues": cues[:10], "matched_events": n_ev,
           "constraints": rel_cons[:8], "procedures": rel_procs[:5],
           "facts": rel_facts[:6], "accidents": rel_acc[:8],
-          "user_said": rel_user})
+          "user_said": rel_user, "experiments": exps,
+          "open_items": rel_opens[:6]})
     return 0
 
 
@@ -3138,10 +3286,19 @@ def main() -> int:
 
     p = sub.add_parser("stats", help="库的规模与分布"); p.set_defaults(fn=cmd_stats)
 
-    p = sub.add_parser("proc", help="记一套步骤（怎么做一件事）")
+    p = sub.add_parser("proc", help="查已有步骤（要记新的用 proc-add）")
     p.add_argument("query", nargs="?", default="", help="关键词；留空列全部")
     p.add_argument("--id", type=int, help="看某一条的完整步骤")
     p.set_defaults(fn=cmd_proc)
+
+    p = sub.add_parser("proc-add", help="记一套新步骤（写进 procedures）")
+    p.add_argument("--name", required=True, help="这套步骤叫什么")
+    p.add_argument("--when", default="", help="什么时候该用它")
+    p.add_argument("--steps", required=True, help="正文，用换行分段")
+    p.add_argument("--evidence", default="", help="来源事件 id 或文档路径")
+    p.add_argument("--domain", default="tech")
+    p.add_argument("--replace", action="store_true", help="同名覆盖")
+    p.set_defaults(fn=cmd_proc_add)
 
     p = sub.add_parser("proc-use", help="记一次步骤的成败（给重写判断用）")
     p.add_argument("id", type=int)
@@ -3220,7 +3377,11 @@ def main() -> int:
     p.set_defaults(fn=cmd_drop)
 
     p = sub.add_parser("forget", help="衰减：把该忘的降档（写 decay_log）")
-    p.add_argument("--dry-run", action="store_true")
+    # 2026-11-07 反过来（治 6759）：默认只看计划、不落库。
+    # 那次「以为 forget 是 dry-run 就跑了」，而默认恰恰是真跑 —— 一次降了 684 条权重。
+    # 危险操作必须默认不执行：要真写加 --apply。
+    p.add_argument("--apply", action="store_true", help="真写 decay_log（默认只出计划）")
+    p.add_argument("--dry-run", action="store_true", help="兼容旧写法，等同不写 --apply")
     p.add_argument("--min-age", type=int, default=30, help="多少天以上的才算旧")
     # 2026-11-03 从 40 提到 50。实测：库里 w<=40 的只有 2 条，而 w 恰为 50 的
     # （done 类默认值）有 1293 条从没被 recall 用到过、年龄也都超过 30 天。
