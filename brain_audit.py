@@ -34,6 +34,7 @@ import os
 import re
 import sqlite3
 import sys
+import tempfile
 
 # GBK 兜底（协议 §4.2）：本机 python stdout 是 GBK，撞上非 GBK 字形会当场崩，
 # 而崩的时候往往已经把结果算完、只是打不出来。本脚本 print 只用 ASCII，
@@ -127,21 +128,39 @@ def audit(src_path=SRC, db_path=DB):
         dead.append(t)
     new_dead = [t for t in dead if t not in KNOWN_DEAD]
 
+    # ④ 代码里 INSERT 的表，schema.sql 必须有建表语句。
+    #    2026-11-07 补，因为发现「测试抓不到」：sleep_log 只在「有事件转入休眠」
+    #    或跑 distill 时才写，把建表语句删掉之后 test_brain 依然 36/36 全过 ——
+    #    要拦住这一类，只能静态比，不能指望某条测试恰好走到那行。
+    #    这正是「老库能跑、新用户按 schema.sql 建库就崩」的源头（sleep_log 就是这么漏的）。
+    sql_path = os.path.join(os.path.dirname(src_path), "schema.sql")
+    schema_missing = []
+    if os.path.exists(sql_path):
+        declared = set(x.lower() for x in re.findall(
+            r"CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+            r"[\"'`]?(\w+)",
+            io.open(sql_path, encoding="utf-8").read(), re.I))
+        declared.add("event_emb")          # 由 embed.py 建（可选向量层）
+        schema_missing = sorted(t for t in writes if t not in declared)
+
     return {
         "subs": len(subs), "unbind": unbind, "ghost_fn": ghost_fn,
         "phantom": phantom, "dead": dead, "new_dead": new_dead,
+        "schema_missing": schema_missing,
         "tables": tables, "counts": counts, "writes": writes,
     }
 
 
 def _report(r, verbose=False):
-    ok = not (r["unbind"] or r["ghost_fn"] or r["phantom"] or r["new_dead"])
+    ok = not (r["unbind"] or r["ghost_fn"] or r["phantom"] or r["new_dead"]
+              or r.get("schema_missing"))
     bits = ["subs=%d" % r["subs"]]
     bits.append("unbind=%d" % len(r["unbind"]))
     bits.append("ghost_fn=%d" % len(r["ghost_fn"]))
     bits.append("phantom=%d" % len(r["phantom"]))
     bits.append("dead=%d(%s)" % (len(r["dead"]),
                                  "known" if not r["new_dead"] else "new"))
+    bits.append("schema_gap=%d" % len(r.get("schema_missing") or []))
     print("%s %s" % ("[OK]  " if ok else "[FAIL]", " ".join(bits)))
 
     for n in r["unbind"]:
@@ -150,6 +169,9 @@ def _report(r, verbose=False):
         print("   subcommand %s -> missing function %s" % (n, f))
     for t in r["phantom"]:
         print("   INSERT into non-existent table: %s" % t)
+    for t in (r.get("schema_missing") or []):
+        print("   written in code but NOT created by schema.sql: %s "
+              "-- a fresh clone will die here (老库有这张表,所以本地看不出)" % t)
     for t in r["new_dead"]:
         print("   NEW dead table: %s (0 rows, no write path) -- "
               "either wire it up or add to KNOWN_DEAD with a reason" % t)
@@ -169,19 +191,27 @@ def _report(r, verbose=False):
 
 def selftest():
     """夹具：在临时库里造四组样本，证明判据真会失败、也不会误报。"""
-    base = os.path.join(os.environ.get("TEMP", "."), "_selftest_brain"
+    base = os.path.join(tempfile.gettempdir(), "_selftest_brain"
                         + str(os.getpid()))
     os.makedirs(base, exist_ok=True)
     fails = 0
     total = 0
 
-    def case(name, src_text, tables, expect_ok):
+    def case(name, src_text, tables, expect_ok, schema_text=None):
         nonlocal fails, total
         total += 1
-        sp = os.path.join(base, "src_%s.py" % total)
-        dp = os.path.join(base, "db_%s.db" % total)
+        # 每个样本独立一个子目录：audit 按 src 同目录找 schema.sql，
+        # 放同一个目录会让上一个样本的 schema 串到下一个
+        d = os.path.join(base, "case%d" % total)
+        os.makedirs(d, exist_ok=True)
+        sp = os.path.join(d, "src.py")
+        dp = os.path.join(d, "db.db")
         with io.open(sp, "w", encoding="utf-8", newline="\n") as f:
             f.write(src_text)
+        if schema_text is not None:
+            with io.open(os.path.join(d, "schema.sql"), "w",
+                         encoding="utf-8", newline="\n") as f:
+                f.write(schema_text)
         con = sqlite3.connect(dp)
         for t in tables:
             con.execute('create table "%s" (x integer)' % t)
@@ -190,7 +220,8 @@ def selftest():
         con.commit()
         con.close()
         r = audit(sp, dp)
-        got = not (r["unbind"] or r["ghost_fn"] or r["phantom"] or r["new_dead"])
+        got = not (r["unbind"] or r["ghost_fn"] or r["phantom"]
+                   or r["new_dead"] or r.get("schema_missing"))
         if got != expect_ok:
             fails += 1
             print("  FAIL case%d %s: expect_ok=%s got=%s" % (total, name, expect_ok, got))
@@ -234,11 +265,31 @@ def selftest():
     else:
         print("  ok   case%d stamp (healthy sample stays clean)" % total)
 
-    for fn in os.listdir(base):
-        try:
-            os.remove(os.path.join(base, fn))
-        except OSError:
-            pass
+    # 9 代码写 sleep_log，但 schema.sql 没建 -> 必须 FAIL。
+    #   老库有这张表，所以本地怎么跑都看不出 —— 这条只有静态比才能拦住。
+    case("schema_gap",
+         'con.execute("INSERT INTO sleep_log (ts) VALUES (1)")\n',
+         ["events", "sleep_log"], False,
+         schema_text='CREATE TABLE IF NOT EXISTS events (x integer);\n')
+    # 10 正向对照：schema.sql 建了它 -> 必须 PASS（证明 9 不是无脑红）
+    case("schema_ok",
+         'con.execute("INSERT INTO sleep_log (ts) VALUES (1)")\n',
+         ["events", "sleep_log"], True,
+         schema_text='CREATE TABLE IF NOT EXISTS events (x integer);\n'
+                     'CREATE TABLE IF NOT EXISTS sleep_log (ts text);\n')
+
+    # 清理：逐层删，不用 rmtree(ignore_errors=True)（红线：它把删不掉当成功）
+    for root, dirs, files in os.walk(base, topdown=False):
+        for fn in files:
+            try:
+                os.remove(os.path.join(root, fn))
+            except OSError:
+                pass
+        for dn in dirs:
+            try:
+                os.rmdir(os.path.join(root, dn))
+            except OSError:
+                pass
     try:
         os.rmdir(base)
     except OSError:
