@@ -108,6 +108,7 @@
 - `consolidate.py` 的数据库路径曾写死为绝对路径 —— 换机器或换库位置会静默连到旧库
 - `test_brain.py` 的沙盘路径曾依赖 `memory/brain` 的上级结构，换目录会算成 `记录\记录`
 
-[Unreleased]: https://github.com/1luoyun/brain-framework/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/1luoyun/brain-framework/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/1luoyun/brain-framework/releases/tag/v0.1.0
+[Unreleased]: https://github.com/1luoyun/dsh-brain-framework/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/1luoyun/dsh-brain-framework/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/1luoyun/dsh-brain-framework/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/1luoyun/dsh-brain-framework/releases/tag/v0.1.0
