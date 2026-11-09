@@ -61,8 +61,16 @@ CREATE TABLE IF NOT EXISTS events (
   last_hit_at TEXT,
   -- 2026-11-03 加：休眠。长期不用且权重已经很低 → 默认检索里不返回。
   -- 想不起来 ≠ 被删除：库还在，recall --include-dormant 能唤醒。
-  dormant INTEGER NOT NULL DEFAULT 0
+  dormant INTEGER NOT NULL DEFAULT 0,
+  -- 2026-11-08 加：项目域。做不同的事用不同的数据，互不稀释。
+  -- 起因很具体：查漏洞时要从 3794 条里捞，其中近一半是小说与烬灵 —— 工作检索总被别的项目吵到。
+  -- 取值由 brain.py domain 按规则算，unknown 表示规则认不出、不参与任何域的默认检索。
+  domain   TEXT
 );
+
+-- idx_events_domain 不在这里建：老库的 events 表已存在，CREATE TABLE IF NOT EXISTS
+-- 会整段跳过，此时 domain 列还没补上，建索引必然报 no such column。
+-- 所以它挪到 brain.py 的 _migrate() 里，在 ALTER 之后建。2026-11-08 实测踩到。
 
 CREATE INDEX IF NOT EXISTS idx_events_ts     ON events(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_events_kind   ON events(kind);

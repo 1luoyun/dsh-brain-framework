@@ -30,6 +30,10 @@ PY = sys.executable
 WRITE_CMDS = {"remember", "constrain", "violate", "feedback", "link", "open", "close",
               "proc-use", "backup", "meta-set", "decide"}
 WRITE_SCRIPTS = {"episode.py", "consolidate.py"}   # 带 --apply 时会改数据
+# 要真实数据环境才跑得动的脚本：公开仓里没有 brain.db，直接跑必然报
+# 「表缺失 / 目录不干净」—— 那是环境问题，不是文档写错了。
+# 这类只核对 --help 起得来，别把环境噪音算成文档 bug。
+NEEDS_DATA = {"health.py", "field_lifecycle.py", "realcheck.py"}
 PLACEHOLDER = re.compile(r"<[^>]+>|\.\.\.|\b123 456\b")
 
 
@@ -70,7 +74,8 @@ def main():
         script = parts[1]
         sub = parts[2] if len(parts) > 2 else ""
         write = (script == "brain.py" and sub in WRITE_CMDS) or \
-                (script in WRITE_SCRIPTS and "--apply" in parts)
+                (script in WRITE_SCRIPTS and "--apply" in parts) or \
+                (script in NEEDS_DATA)
         argv = [PY, os.path.join(HERE, script)] + parts[2:]
         if write:
             # 去掉 --apply 再加 --help：argparse 见 --help 就退出，但保险起见

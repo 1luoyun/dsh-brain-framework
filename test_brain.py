@@ -73,6 +73,16 @@ def main():
     setup()
     print("沙盘: %s" % SAND)
 
+    print("\n--- schema 与代码一致 ---")
+    con = sqlite3.connect(os.path.join(SAND, "brain.db"))
+    cols = {r[1] for r in con.execute("PRAGMA table_info(events)")}
+    con.close()
+    # 2026-11-08 加。domain 是靠 _migrate 的 ALTER 补出来的列 —— 如果哪天只改了
+    # brain.py、忘了改 schema.sql，新建的库就没有它。sleep_log 那次正是这么漏的，
+    # 而且当时的测试照样全过（根本没走到写 sleep_log 那行）。这里当场钉住。
+    ok("schema 含 domain 列（不是只靠 _migrate 补）", "domain" in cols,
+       "events 有 %d 列" % len(cols))
+
     print("\n--- 写入 ---")
     a = js(["remember", "--kind", "accident", "--title", "测试事故：把配置改坏了",
             "--weight", "95", "--emotion", "sting", "--source", "test"])
@@ -185,9 +195,9 @@ def main():
     con.execute("UPDATE events SET ts=datetime('now','localtime','-60 days')")
     con.commit()
     con.close()
-    # 2026-11-07：forget 的默认改成了 dry-run（治 6759 —— 当时以为它是只出计划，
-    # 实际默认真跑，一次降了 684 条权重）。要验「真降了」必须显式 --apply，
-    # 否则这里查到的是原值，断言就成了在测 dry-run 的默认值本身。
+    # 2026-11-08 补：forget 的默认已改成 dry-run（治 6759），
+    # 要验「真降了」必须显式 --apply，否则查到的是原值。
+    # 这条当时只在公开仓那份改了，本机这份漏了 —— 又是一次「源码与副本只改一处」。
     f = js(["forget", "--apply"])
     ok("forget 有候选", f and f["candidates"] >= 1, "candidates=%s" % (f or {}).get("candidates"))
     con = sqlite3.connect(os.path.join(SAND, "brain.db"))

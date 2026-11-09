@@ -34,7 +34,7 @@ from transformers import AutoModel, AutoTokenizer  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB = os.environ.get("BRAIN_DB") or os.path.join(HERE, "brain.db")
-# 2026-11-03 开源准备：原来写死本机路径 `<workspace>\models\...`，换机器直接崩。
+# 2026-11-03 开源准备：原来写死本机路径 `E:\deepseek\models\...`，换机器直接崩。
 # 现在默认给 HF 模型名（自动下载），需要离线/自备模型时用环境变量指本地目录。
 MODEL = os.environ.get("BRAIN_EMBED_MODEL") or "BAAI/bge-small-zh-v1.5"
 BATCH = 64

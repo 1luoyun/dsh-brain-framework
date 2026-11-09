@@ -62,6 +62,77 @@ W = {"accident": 95, "correction": 90, "promise": 80, "decision": 70,
 # feedback 增量
 FB = {"good": 5, "bad": 15, "correct": 20}
 
+# 项目域分类规则（2026-11-08 立）。
+#
+# 为什么要有：查漏洞相关记忆时，要从全库捞，而库里近一半是小说与烬灵 ——
+# 工作检索总被别的项目吵到。分域不是为了好看，是为了让「查这件事」别捞回「那件事」。
+#
+# 顺序即优先级，越靠前越强势（同时命中取先者）。src 放第一是因为它最少（80 条上下），
+# 一旦被别的域抢走就更难找。unknown 是正常结果，不是失败 —— 认不出来的就别硬分，
+# 让它待在未分类里，不参与任何域的默认检索。
+DOMAIN_RULES = (
+    ("src", ("SRC", "漏洞", "补天", "Hunter", "hunter", "SSRF", "ssrf",
+             "靶场", "YzmCMS", "迅睿", "webshell", "越权", "挖洞", "白帽",
+             "PoC", "poc", "CVE", "渗透")),
+    ("jinling", ("烬灵", "kiri", "Kiri", "数字生命", "runtime-kiri",
+                 "自思考", "proactives")),
+    # 出图单独成域（2026-11-08 抽样发现）：FLUX / denoise / ControlNet 那批技术记录
+    # 原来散在 novel 和 unknown 里 —— 它们是 ComfyUI 的事，不是小说正文的事。
+    ("image", ("出图", "ComfyUI", "comfy", "FLUX", "flux", "SDXL", "sdxl",
+               "denoise", "ControlNet", "LoRA", "Lora", "立绘", "文生图",
+               "img2img", "蒙版", "采样器", "cfg")),
+    ("novel", ("小说", "章末", "章节", "卷四", "卷三", "重写稿", "写作域",
+               "写作", "书稿", "通读", "拟态句", "文风", "门禁",
+               "上架", "稿", "封面")),
+    ("brain", ("brain", "Brain", "记忆库", "闸门", "巡检", "healthcheck",
+               "guard", "schema", "DSH", "dsh", "插件", "cordis", "preset",
+               "预设", "会话", "宿主", "作业协议", "交付")),
+    ("ops", ("磁盘", "驱动", "重装", "备份", "零填充", "编码坑", "清理",
+             "git", "仓", "部署", "安装", "下载", "文件", "目录", "恢复")),
+    ("life", ("吃饭", "闲聊", "游戏", "生活", "睡觉", "天气")),
+)
+# talk = 他说的对话本身，不隶属任何项目（2026-11-08 加）。
+# 由头：unknown 1897 条里 971 条是 kind=user 的日常对话（「这个不用」「那倒是不用」）——
+# 这些不是「分不出来」，而是本来就不该归到某个项目。给它们一个正经归属，
+# 比一边留着 unknown 一边怀疑规则是不是不够好要诚实。
+DOMAINS = tuple(n for n, _ in DOMAIN_RULES) + ("talk", "unknown")
+
+
+# 正文里只认**专有名词**（2026-11-08 加的折中）。
+# 两轮实测的教训：全看正文时，工具链记录因正文里顺口提「烬灵」被判成 jinling；
+# 只看标题又有 62% 认不出。所以正文只在标题认不出时才用，且只给**最需要召回的两域**用
+# （src 只有几十条，漏一条就少一条；novel/jinling 几百条，漏几条无所谓）。
+# 「写作」「交付」「正文」这类通用词永远不许参与 —— 它们在哪个项目的正文里出现都正常。
+BODY_HINTS = (
+    ("src", ("SSRF", "YzmCMS", "迅睿", "补天", "Hunter", "hunter")),
+    ("image", ("ComfyUI", "FLUX", "ControlNet", "SDXL")),
+)
+
+
+def classify_domain(title, body="", kind="") -> str:
+    """按 DOMAIN_RULES 判一条事件属于哪个项目域。
+
+    两段式：先看标题（全规则），认不出再用正文（只认 BODY_HINTS 里的专有名词）。
+    分域要的是**可解释**——问「这条为什么算 novel」，答得出来才能改。
+
+    kind=user 且认不出项目时归 talk：那是对话本身，不隶属任何项目。
+    这类占 unknown 的一半，把它们叫「分不出来」是自欺。
+    """
+    text = (title or "")
+    for name, keys in DOMAIN_RULES:
+        for k in keys:
+            if k in text:
+                return name
+    b = (body or "")
+    if b:
+        for name, keys in BODY_HINTS:
+            for k in keys:
+                if k in b:
+                    return name
+    if kind == "user":
+        return "talk"
+    return "unknown"
+
 
 def now() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
@@ -85,9 +156,15 @@ def _migrate(con: sqlite3.Connection) -> None:
     """
     have = {r[1] for r in con.execute("PRAGMA table_info(events)")}
     for name, ddl in (("last_hit_at", "TEXT"),
-                      ("dormant", "INTEGER NOT NULL DEFAULT 0")):
+                      ("dormant", "INTEGER NOT NULL DEFAULT 0"),
+                      # 2026-11-08：项目域。与 fingerprint 同样，老库靠这里补列，
+                      # schema.sql 同批加（上次 sleep_log 就是只改了一边）。
+                      ("domain", "TEXT")):
         if name not in have:
             con.execute("ALTER TABLE events ADD COLUMN %s %s" % (name, ddl))
+    # 索引必须建在补列之后。放进 schema.sql 会踩「老库表已存在 → CREATE TABLE 跳过 →
+    # domain 列还没有 → 建索引报 no such column」（2026-11-08 实测）。
+    con.execute("CREATE INDEX IF NOT EXISTS idx_events_domain ON events(domain)")
 
 
 def ensure_schema(con: sqlite3.Connection) -> None:
@@ -858,6 +935,21 @@ def cmd_recall(a) -> int:
     inc_user = getattr(a, "with_user", False)
     du_e = "" if inc_user else " AND e.kind!='user'"
     du_p = "" if inc_user else " AND kind!='user'"
+    # 项目域过滤（2026-11-08）。查某个域时**带上 unknown** ——
+    # 分不出类不等于不属于它，漏掉的代价是「查不到」，比多带几条更糟。
+    # unknown 占六成，真排掉的话工作记录会丢一大片。
+    dom = getattr(a, "domain", None)
+    if dom and dom not in DOMAINS:
+        con.close()
+        emit({"ok": False, "error": "domain 只能是 %s" % " / ".join(DOMAINS)})
+        return 2
+    if not dom or dom == "all":
+        df_e = df_p = ""
+    elif dom == "unknown":
+        df_e, df_p = " AND e.domain='unknown'", " AND domain='unknown'"
+    else:
+        df_e = " AND (e.domain='%s' OR e.domain='unknown')" % dom
+        df_p = " AND (domain='%s' OR domain='unknown')" % dom
     attempts = []
     rows = []
 
@@ -873,7 +965,7 @@ def cmd_recall(a) -> int:
                 "       e.fingerprint, bm25(events_fts) AS rel,"
                 "       snippet(events_fts,1,'…','…','…',12) AS snip"
                 " FROM events_fts JOIN events e ON e.id=events_fts.rowid"
-                " WHERE events_fts MATCH ? AND e.superseded=0" + dm_e + du_e +
+                " WHERE events_fts MATCH ? AND e.superseded=0" + dm_e + du_e + df_e +
                 " ORDER BY rel ASC LIMIT ?", (term, max(a.limit * 5, 30)))
             return [dict(r) for r in cur.fetchall()]
         except sqlite3.OperationalError:
@@ -903,7 +995,7 @@ def cmd_recall(a) -> int:
             ("SELECT id,ts,kind,title,weight,emotion,salience,hits,session,fingerprint,"
              " substr(coalesce(body,''),1,120) AS snip,"
              " (%s) AS n_hit, (%s) AS rel_hit FROM events"
-             " WHERE (%s) AND superseded=0" + dm_p + du_p +
+             " WHERE (%s) AND superseded=0" + dm_p + du_p + df_p +
              " ORDER BY rel_hit DESC, n_hit DESC, weight DESC, ts DESC LIMIT ?")
             % (" + ".join(nsql), " + ".join(wsql), " OR ".join(conds)))
         cur = con.execute(sql, nparams + wparams + params + [max(a.limit * 5, 30)])
@@ -1257,6 +1349,31 @@ def cmd_recall(a) -> int:
                 if n > 2:
                     r["sib"] = n
                     r["score"] = r["score"] * (1.0 / (1.0 + 0.08 * math.log(n / 2.0)))
+
+        # done 类检索降权（2026-11-08）。
+        #
+        # 为什么这里降、不干脆把数据里的权重调低：weight 表达的是「这件事多重要」，
+        # done=50 这个档位本身是对的（干完了、日常量级）。问题在于它同时被拿来
+        # 决定「检索时该不该冒头」—— 这是两件事，硬用同一个数字表达就会互相将就。
+        # 所以记录不动，只在排序分上打折：既不篡改历史事实，又让噪音别抢位。
+        #
+        # 为什么是 0.5：done 占 66%（1624/3795），是召回池里最大的一堆；
+        # 打对折后它仍能进池（不丢数据），但很难再把权重 80+ 的教训挤下去。
+        #
+        # ⚠ 以后要动这个系数：改完必须跑 eval.py 比 hit@1/3/10，别凭「感觉更合理」定。
+        #   2026-11-05 的干扰降权（上面那段）就是无损但没有指标证据支持的先例 ——
+        #   那种改动留着可以，但**不许在总结里写成「提升了检索质量」**。
+        # ── done 类检索降权：**试过，负收益，已撤**（2026-11-08）──
+        # 动机：done 占 66%（1624/3795），是召回池里最大的一堆，疑心它挤占了
+        # 教训与事故的位置。做法是记录权重不动，只在排序分上乘系数（0.5）。
+        # 结果（同一套 50 题，只改系数）：
+        #   系数 1.0（不降权）  hit@1 37/50  hit@3 42/50  hit@10 47/50
+        #   系数 0.5（降权）    hit@1 36/50  hit@3 41/50  hit@10 47/50
+        # 负收益，撤掉。原因不难理解：不少题问的就是「我做过什么」，
+        # done 记录本身就是答案 —— 压它等于把正确答案往下推。
+        # ⇒ 结论：**权重分高不是问题，检索匹配质量才是**。别再从权重上想办法。
+        # 系数曾走 BRAIN_DONE_DECAY 环境变量做 A/B，撤改动后一并移除，
+        # 免得留一个「看不出有没有用」的开关。
 
         rows.sort(key=lambda r: (
             0 if r.get("exact_title") else 1,
@@ -1858,7 +1975,7 @@ def cmd_meta_set(a) -> int:
 def cmd_backup(a) -> int:
     """在线快照 brain.db —— 用 sqlite 的 backup API，不锁库、不打断使用。
 
-    为什么需要它：brain 目录在 E:\\deepseek 仓里，但 brain.db 故意不入库
+    为什么需要它：brain 目录在本地工作区里，但 brain.db 故意不入库
     （34 MB 二进制、每次改都变，git 存不划算）。既然不靠 git，就必须有
     别的回退点 —— 否则库一坏，几千条记忆全没了。这不是优化，是底线。
     """
@@ -2305,34 +2422,136 @@ def cmd_review(a) -> int:
 
 
 def cmd_purge_derived(a) -> int:
-    """清理派生数据：作废事件留下的向量。
+    """清理派生数据：作废事件留下的向量，以及指向已作废/已不存在事件的关联边。
 
     为什么需要它：作废（superseded=1）只改 events 表，派生视图不会自动跟着清。
-    2026-11-06 实测：去重 + 清理之后，`event_emb` 里躺着 **3042 条已作废事件的向量**
-    —— 占空间，还可能把「已经删掉的内容」重新带进语义检索里。
+    2026-11-06 实测：去重 + 清理之后，`event_emb` 里躺着 **3042 条已作废事件的向量**。
+    2026-11-08 又发现第二处：批量作废 494 条注入残留后，`links` 里留了 **1890 条断链**
+    —— 两端的边还在，指向的记录已经作废。当时这个命令只清向量，检查里报红才发现。
 
-    只清**能重建的派生数据**（向量）；事件本体与留痕一律不动。
-    情景段由 episode.py --apply 重建时自动滤掉作废事件，不在这里处理。
+    只清**能重建的派生数据**（向量 + 关联边）；事件本体与留痕一律不动。
+    关联边由 assoc.py --build 重建；情景段由 episode.py --apply 重建时自动滤掉作废事件。
     """
     con = connect(); ensure_schema(con)
     n = con.execute(
         "SELECT count(*) FROM event_emb WHERE id IN"
         " (SELECT id FROM events WHERE superseded=1)").fetchone()[0]
-    if not n:
+    # 关联边：任一端指向「已作废」或「根本不存在」的事件，都是断链
+    lk = con.execute(
+        "SELECT count(*) FROM links WHERE"
+        " a NOT IN (SELECT id FROM events WHERE superseded=0)"
+        " OR b NOT IN (SELECT id FROM events WHERE superseded=0)").fetchone()[0]
+    if not n and not lk:
         con.close()
-        emit({"ok": True, "orphan_vectors": 0, "note": "派生数据已经是干净的"})
+        emit({"ok": True, "orphan_vectors": 0, "broken_links": 0,
+              "note": "派生数据已经是干净的"})
         return 0
     if getattr(a, "apply", False):
-        con.execute("DELETE FROM event_emb WHERE id IN"
-                    " (SELECT id FROM events WHERE superseded=1)")
+        if n:
+            con.execute("DELETE FROM event_emb WHERE id IN"
+                        " (SELECT id FROM events WHERE superseded=1)")
+        if lk:
+            con.execute(
+                "DELETE FROM links WHERE"
+                " a NOT IN (SELECT id FROM events WHERE superseded=0)"
+                " OR b NOT IN (SELECT id FROM events WHERE superseded=0)")
         con.commit()
         con.close()
-        emit({"ok": True, "dry_run": False, "orphan_vectors": n, "deleted": n,
-              "note": "删的是向量不是事件；要补回来就跑 embed.py --build"})
+        emit({"ok": True, "dry_run": False, "orphan_vectors": n, "broken_links": lk,
+              "note": "删的是派生数据不是事件；向量用 embed.py --build 重建、"
+                      "关联边用 assoc.py --build 重建"})
     else:
         con.close()
-        emit({"ok": True, "dry_run": True, "orphan_vectors": n,
+        emit({"ok": True, "dry_run": True, "orphan_vectors": n, "broken_links": lk,
               "note": "加 --apply 才真删"})
+    return 0
+
+
+def cmd_stale(a) -> int:
+    """列出「权重很高、却从没被取出来过」的记录。
+
+    为什么要这个：health 的「记忆取用」只报一个比例（现在高权重 8.4%），
+    红着但不告诉我具体是谁 —— 那就只能干看着，没法动手。
+    这个命令把名字点出来：哪几条写着最重要的事，一年没被 recall 碰过。
+
+    2026-11-10 立，由头是体检连着几天红在这一项。真去看数据才发现，
+    高权重里躺着的不是没用的流水，恰恰是「别把 openAt 改成 startup」这种
+    最该在动手前想起来的东西。它们没被取到，不怪检索精度（eval hit@1 一直 74%），
+    怪的是没人去查、或者标题里的词跟实际场景对不上。
+
+    所以这个命令的用处不是「看看」，是：
+      · 看完把真该常用的，用更可能的说法再记一条（或补进 SELF）；
+      · 剩下的确认是历史包袱，就让它继续沉。
+    """
+    con = connect(); ensure_schema(con)
+    mw = getattr(a, "min_weight", 80)
+    lim = getattr(a, "limit", 20)
+    rows = con.execute(
+        "SELECT id, ts, kind, weight, title, domain FROM events"
+        " WHERE superseded=0 AND dormant=0 AND weight>=? AND (hits IS NULL OR hits=0)"
+        " ORDER BY weight DESC, ts DESC LIMIT ?", (mw, lim)).fetchall()
+    total = con.execute(
+        "SELECT count(*) FROM events WHERE superseded=0 AND dormant=0"
+        " AND weight>=? AND (hits IS NULL OR hits=0)", (mw,)).fetchone()[0]
+    usable = con.execute(
+        "SELECT count(*) FROM events WHERE superseded=0 AND dormant=0 AND weight>=?",
+        (mw,)).fetchone()[0]
+    con.close()
+    out = [{"id": r[0], "ts": r[1], "kind": r[2], "weight": r[3],
+            "title": r[4], "domain": r[5]} for r in rows]
+    emit({"ok": True, "total_never_used": total, "high_weight_total": usable,
+          "rate": round(100.0 * (usable - total) / usable, 1) if usable else 100.0,
+          "shown": len(out), "items": out,
+          "hint": "看标题的写法。这批里很多是「我做了什么」（批A/B收口、扫 C 盘并订正 D 盘），"
+                  "而不是「下次该注意什么」—— 于是我搜「改配置注意」时永远撞不上它们。"
+                  "标题要写成将来会被搜到的样子，不是给今天留的收据。"})
+    return 0
+
+
+def cmd_domain(a) -> int:
+    """给事件打「项目域」标签：这条属于小说、漏洞、还是记忆工具本身。
+
+    为什么要有：查漏洞相关记忆时要从全库捞，而库里近一半是小说与烬灵 ——
+    工作检索总被别的项目吵到。2026-11-08 实测 3794 条里 src 只有 80 条，
+    小说 1011、烬灵 653、brain 624，剩下的认不出来。
+
+    规则在 DOMAIN_RULES（词面、可解释、可改）。认不出来的记 unknown，
+    **不硬分** —— unknown 不参与任何域的默认检索，混不进工作就算达标。
+
+    默认只出计划不落库；--apply 才写。--force 重算已有标签（改了规则之后用）。
+    """
+    con = connect(); ensure_schema(con)
+    rows = [dict(r) for r in con.execute(
+        "SELECT id, ts, kind, title, body, domain FROM events WHERE superseded=0")]
+    todo, stat = [], {}
+    for r in rows:
+        cur = r.get("domain")
+        if cur and not a.force:
+            stat[cur] = stat.get(cur, 0) + 1
+            continue
+        d = classify_domain(r["title"], r["body"], r["kind"])
+        stat[d] = stat.get(d, 0) + 1
+        if d != cur:
+            todo.append((d, r["id"]))
+
+    for d in DOMAINS:
+        n = stat.get(d, 0)
+        if n:
+            print("%-9s %5d  %5.1f%%" % (d, n, 100.0 * n / max(1, len(rows))))
+
+    if not a.apply:
+        con.close()
+        emit({"ok": True, "total": len(rows), "would_change": len(todo),
+              "applied": False, "dist": stat,
+              "hint": "加 --apply 才写库；改了规则要重算用 --force"})
+        return 0
+
+    for d, eid in todo:
+        con.execute("UPDATE events SET domain=? WHERE id=?", (d, eid))
+    con.commit()
+    con.close()
+    emit({"ok": True, "total": len(rows), "changed": len(todo),
+          "applied": True, "dist": stat})
     return 0
 
 
@@ -3205,6 +3424,10 @@ def main() -> int:
     p.add_argument("--with-user", action="store_true",
                    help="把用户的发言（kind=user）也纳入检索。默认不混进来 ——"
                         "「他说过什么」和「发生过什么」是两层")
+    p.add_argument("--domain", default=None,
+                   help="只查某个项目域（%s / all）。默认全库；"
+                        "查具体域时会自动带上 unknown —— 分不出类的不等于不属于它"
+                        % " / ".join(DOMAINS))
     p.add_argument("--with-episode", action="store_true",
                    help="附带「命中的事落在哪段经历里」。默认关：段粒度（平均 5 条、最长 83 条）"
                         "跟查询命中粒度（10-20 条）对不上，按「命中几条」挑段必然是噪声")
@@ -3375,6 +3598,16 @@ def main() -> int:
     p.add_argument("--reason", required=True, help="为什么作废（会写进留痕）")
     p.add_argument("--weight", type=int, default=80)
     p.set_defaults(fn=cmd_drop)
+
+    p = sub.add_parser("domain", help="按项目域给事件打标（默认只出统计）")
+    p.add_argument("--apply", action="store_true", help="真写库")
+    p.add_argument("--force", action="store_true", help="重算已有标签（改了规则后用）")
+    p.set_defaults(fn=cmd_domain)
+
+    p = sub.add_parser("stale", help="列出高权重但从没被取出来过的记录")
+    p.add_argument("--min-weight", type=int, default=80, help="权重下限，默认 80")
+    p.add_argument("--limit", type=int, default=20, help="最多列几条")
+    p.set_defaults(fn=cmd_stale)
 
     p = sub.add_parser("forget", help="衰减：把该忘的降档（写 decay_log）")
     # 2026-11-07 反过来（治 6759）：默认只看计划、不落库。
